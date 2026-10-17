@@ -23,7 +23,7 @@ from .models import Post
 
 TZ = ZoneInfo(config.TIMEZONE)
 SMOOTH = 0.01  # suavizado para no dividir por cero ni exagerar temas diminutos
-NO_MOMENTUM = {"youtube"}
+NO_MOMENTUM = {"youtube"}  # con el RSS; con la API de YouTube sí entra (ver sources.youtube_mode)
 WEEKDAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 
 
@@ -132,7 +132,8 @@ def attr_value(p: Post, attr: str) -> str:
     return p.labels[attr]
 
 
-def analyze(posts: list[Post], start: datetime, end: datetime, current_days: int = 7) -> dict:
+def analyze(posts: list[Post], start: datetime, end: datetime, current_days: int = 7,
+            no_momentum: set[str] = NO_MOMENTUM) -> dict:
     ai = [p for p in posts if p.labels and p.labels["is_ai"] >= 0.5]
     split = end - timedelta(days=current_days)
     cur = [p for p in ai if p.created_at >= split]
@@ -146,7 +147,7 @@ def analyze(posts: list[Post], start: datetime, end: datetime, current_days: int
     # Solo se compara crecimiento en plataformas con muestra en ambas ventanas. YouTube queda
     # fuera: su RSS trae solo los últimos 15 videos por canal y eso fabrica "crecimiento".
     n_cur, n_base = Counter(p.platform for p in cur), Counter(p.platform for p in base)
-    momentum_platforms = {pl for pl in n_cur if pl not in NO_MOMENTUM and n_cur[pl] >= 10 and n_base[pl] >= 10}
+    momentum_platforms = {pl for pl in n_cur if pl not in no_momentum and n_cur[pl] >= 10 and n_base[pl] >= 10}
     trend_posts = [p for p in ai if p.platform in momentum_platforms]
     daily = _daily_shares(trend_posts, days)
     share_cur = _window_share(cur, momentum_platforms)

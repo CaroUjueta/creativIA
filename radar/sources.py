@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import logging
+import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -45,10 +46,11 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None) -> httpx.Response | None:
+async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None,
+               headers: dict | None = None) -> httpx.Response | None:
     for attempt in range(3):
         try:
-            r = await client.get(url, params=params)
+            r = await client.get(url, params=params, headers=headers)
             if r.status_code == 429:
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
@@ -168,6 +170,63 @@ async def youtube(client: httpx.AsyncClient, start: datetime, end: datetime) -> 
     return [p for b in batches for p in b]
 
 
+# --- YouTube Data API v3 (opcional, con YOUTUBE_API_KEY) ---------------------------------
+
+YT_API = "https://www.googleapis.com/youtube/v3"
+
+
+def youtube_mode() -> str:
+    """'api' si hay YOUTUBE_API_KEY (búsqueda por día, entra al cálculo de crecimiento); si no, 'rss'."""
+    return "api" if os.environ.get("YOUTUBE_API_KEY") else "rss"
+
+
+async def youtube_api(client: httpx.AsyncClient, start: datetime, end: datetime, per_day: int) -> list[Post]:
+    """Los videos más vistos de cada día por consulta, con la API oficial.
+
+    Cuota: cada búsqueda cuesta 100 unidades de las 10.000 diarias gratis; 21 días × 2 consultas
+    son unas 4.300. La clave va en un encabezado para que nunca aparezca en los registros.
+    """
+    headers = {"X-Goog-Api-Key": os.environ["YOUTUBE_API_KEY"]}
+    sem = asyncio.Semaphore(4)
+
+    async def one(q: dict, since: datetime, until: datetime) -> list[dict]:
+        params = {"part": "snippet", "type": "video", "order": "viewCount", "q": q["q"],
+                  "relevanceLanguage": q["lang"], "maxResults": min(per_day, 50),
+                  "publishedAfter": _iso(since), "publishedBefore": _iso(until)}
+        async with sem:
+            r = await _get(client, f"{YT_API}/search", params, headers)
+        return [{**item, "lang": q["lang"]} for item in (r.json().get("items", []) if r else [])]
+
+    found = [i for batch in await asyncio.gather(*(one(q, s, e) for q in config.YOUTUBE_QUERIES
+                                                    for s, e in day_windows(start, end))) for i in batch]
+    by_id = {i["id"]["videoId"]: i for i in found if i.get("id", {}).get("videoId")}
+    stats = {}
+    ids = list(by_id)
+    for k in range(0, len(ids), 50):  # videos.list: 1 unidad por cada 50 videos
+        r = await _get(client, f"{YT_API}/videos", {"part": "statistics", "id": ",".join(ids[k:k + 50])}, headers)
+        for v in (r.json().get("items", []) if r else []):
+            stats[v["id"]] = v.get("statistics", {})
+
+    out = []
+    for vid, item in by_id.items():
+        sn, st = item["snippet"], stats.get(vid, {})
+        published = datetime.fromisoformat(sn["publishedAt"].replace("Z", "+00:00"))
+        if not (start <= published < end):
+            continue
+        out.append(Post(
+            id=f"yt:{vid}",
+            platform="youtube",
+            url=f"https://www.youtube.com/watch?v={vid}",
+            text=scrub(f"{sn.get('title', '')}. {sn.get('description', '')[:400]}"),
+            created_at=published,
+            author_hash=anonymize_author(sn.get("channelId", vid)),
+            lang=item["lang"],
+            # Sin nombre del canal: puede ser una persona.
+            views=int(st.get("viewCount", 0)), likes=int(st.get("likeCount", 0)), comments=int(st.get("commentCount", 0)),
+        ))
+    return out
+
+
 # --- Google News (RSS) -------------------------------------------------------------------
 
 async def google_news(client: httpx.AsyncClient, start: datetime, end: datetime, per_day: int) -> list[Post]:
@@ -240,6 +299,28 @@ def community_csv(path: Path, start: datetime, end: datetime) -> list[Post]:
     return out
 
 
+COMMUNITY_FIELDS = ["platform", "url", "text", "published_at", "likes", "comments", "shares", "views", "publisher"]
+
+
+def append_community(path: Path, row: dict) -> int:
+    """Agrega un aporte al CSV de comunidad (lo crea con encabezado si no existe). Devuelve el total."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=COMMUNITY_FIELDS)
+        if new:
+            w.writeheader()
+        w.writerow({k: row.get(k, "") for k in COMMUNITY_FIELDS})
+    return count_community(path)
+
+
+def count_community(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with path.open(newline="", encoding="utf-8") as f:
+        return sum(1 for _ in csv.DictReader(f))
+
+
 async def collect(start: datetime, end: datetime, platforms: set[str], per_day: int,
                   community: Path | None = None) -> list[Post]:
     async with httpx.AsyncClient(timeout=30, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
@@ -249,14 +330,15 @@ async def collect(start: datetime, end: datetime, platforms: set[str], per_day: 
         if "hackernews" in platforms:
             jobs["hackernews"] = hackernews(client, start, end, max(5, per_day // 3))
         if "youtube" in platforms:
-            jobs["youtube"] = youtube(client, start, end)
+            jobs["youtube"] = (youtube_api(client, start, end, max(5, per_day // 2)) if youtube_mode() == "api"
+                               else youtube(client, start, end))
         if "google_news" in platforms:
             jobs["google_news"] = google_news(client, start, end, max(5, per_day // 2))
         results = await asyncio.gather(*jobs.values())
     posts = [p for batch in results for p in batch]
     for name, batch in zip(jobs, results):
         log.info("%-12s %5d piezas", name, len(batch))
-    if community:
+    if community and community.exists():
         extra = community_csv(community, start, end)
         log.info("%-12s %5d piezas", "comunidad", len(extra))
         posts += extra

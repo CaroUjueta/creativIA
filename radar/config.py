@@ -103,6 +103,12 @@ GOOGLE_NEWS_QUERIES: list[dict] = [
 ]
 
 # Canales de YouTube de referencia (feed RSS público oficial). Añadir los que el equipo siga.
+# Con YOUTUBE_API_KEY se busca por consulta y por día (como en Bluesky) en vez de seguir canales.
+YOUTUBE_QUERIES: list[dict] = [
+    {"q": "inteligencia artificial", "lang": "es"},
+    {"q": "artificial intelligence", "lang": "en"},
+]
+
 YOUTUBE_CHANNELS: dict[str, str] = {
     "UCbfYPyITQ-7l4upoX8nvctg": "Two Minute Papers",
     "UCNJ1Ymd5yFuUPtn21xtRbbw": "AI Explained",

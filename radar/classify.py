@@ -145,34 +145,44 @@ async def _classify_jev(posts: list[Post], concurrency: int) -> int:
 
     questions = _questions()
     sem = asyncio.Semaphore(concurrency)
-    tokens = 0
+    tokens, ok, failed_in_a_row = 0, 0, 0
 
     async with AsyncTypeSafeClient(**_client_kwargs()) as client:
         async def one(p: Post):
-            nonlocal tokens
+            nonlocal tokens, ok, failed_in_a_row
             async with sem:
                 try:
                     r = await client.system_one(_state(p), questions)
                 except TypeSafeAuthenticationError as e:
-                    raise InvalidKey from e
-                except Exception as e:  # una pieza fallida no debe tumbar el reporte
-                    log.warning("Jev falló en %s: %s", p.id, e)
+                    raise JevUnavailable(f"clave inválida ({e})") from e
+                except Exception as e:  # una pieza fallida no debe tumbar el reporte...
+                    failed_in_a_row += 1
+                    if failed_in_a_row <= 3:
+                        log.warning("Jev falló en %s: %s", p.id, e)
+                    # ...pero si nada funciona (sin saldo, límite de la clave, caída) se corta ya.
+                    if failed_in_a_row >= MAX_FAILURES_IN_A_ROW and ok == 0:
+                        raise JevUnavailable(str(e)) from e
                     return
+            failed_in_a_row = 0
+            ok += 1
             p.labels = _labels_from_response(r)
             tokens += r.usage.input_tokens if r.usage else 0
 
         tasks = [asyncio.create_task(one(p)) for p in posts]
         try:
             await asyncio.gather(*tasks)
-        except InvalidKey:
+        except JevUnavailable:
             for t in tasks:
                 t.cancel()
             raise
     return tokens
 
 
-class InvalidKey(Exception):
-    pass
+MAX_FAILURES_IN_A_ROW = 20
+
+
+class JevUnavailable(Exception):
+    """Jev no responde para ninguna pieza: clave inválida, sin saldo o límite de gasto alcanzado."""
 
 
 def filter_terms(terms: list[dict], keep: int = 15) -> list[dict]:
@@ -352,7 +362,7 @@ def _classify_local(posts: list[Post]) -> None:
 def classify(posts: list[Post], use_jev: bool, use_local: bool = False, concurrency: int = 16) -> dict:
     """Etiqueta las piezas in situ. Devuelve estadísticas del proceso para el reporte."""
     mode = "jev" if use_jev else "local" if use_local else "heuristico"
-    stats = {"classifier": mode, "cached": 0, "classified": 0, "input_tokens": 0}
+    stats = {"classifier": mode, "cached": 0, "classified": 0, "input_tokens": 0, "jev_error": ""}
     if mode == "local":
         log.info("Clasificando %d piezas con el modelo local %s…", len(posts), LOCAL_MODEL)
         _classify_local(posts)
@@ -376,8 +386,14 @@ def classify(posts: list[Post], use_jev: bool, use_local: bool = False, concurre
         log.info("Clasificando %d piezas con %s (%d en caché)…", len(pending), f"{_client_kwargs()['model']} vía {jev_provider()}", stats["cached"])
         try:
             stats["input_tokens"] = asyncio.run(_classify_jev(pending, concurrency))
-        except InvalidKey:
-            raise SystemExit(f"Clave de Jev inválida ({jev_provider()}): revisa TYPESAFE_API_KEY, OPENROUTER_API_KEY, MODEL_ACCESS_KEY u OPENCODE_API_KEY")
+        except JevUnavailable as e:
+            # Todo el lote con el respaldo: mezclar etiquetas de Jev (en caché) con las del respaldo
+            # sesgaría la comparación entre semanas.
+            for p in posts:
+                p.labels = {}
+            fallback = classify(posts, use_jev=False, use_local=use_local or local_available())
+            log.warning("Jev no está disponible vía %s (%s). Se usó el clasificador %s.", jev_provider(), e, fallback["classifier"])
+            return {**fallback, "jev_error": f"{jev_provider()}: {e}"[:300]}
         done = [p for p in pending if p.labels]
         _append_cache(done)
         stats["classified"] = len(done)
