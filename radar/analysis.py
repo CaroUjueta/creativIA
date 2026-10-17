@@ -186,6 +186,7 @@ def analyze(posts: list[Post], start: datetime, end: datetime, current_days: int
     topics.sort(key=lambda x: x["score"], reverse=True)
     return {
         "topics": topics,
+        "feed": top_posts(cur, lifts),
         "emerging_terms": emerging_terms(cur, base, current_days, max(1, (split - start).days)),
         "days": [d.isoformat() for d in days],
         "counts": {"total": len(posts), "ai": len(ai), "current": len(cur), "baseline": len(base),
@@ -193,6 +194,26 @@ def analyze(posts: list[Post], start: datetime, end: datetime, current_days: int
                    "momentum_platforms": sorted(momentum_platforms)},
         "window": {"start": start.isoformat(), "split": split.isoformat(), "end": end.isoformat()},
     }
+
+
+def top_posts(posts: list[Post], lifts: dict[str, float], per_platform: int = 20, limit: int = 60) -> list[dict]:
+    """Las piezas que más rindieron frente a la mediana de su plataforma, sin datos del autor.
+
+    Se limita cuántas entran por plataforma para que el feed no lo acapare una sola fuente.
+    Google News no trae interacción, así que no compite aquí.
+    """
+    by_platform = defaultdict(list)
+    for p in posts:
+        if p.id in lifts:
+            by_platform[p.platform].append(p)
+    chosen = [p for items in by_platform.values()
+              for p in sorted(items, key=lambda p: lifts[p.id], reverse=True)[:per_platform]]
+    chosen.sort(key=lambda p: lifts[p.id], reverse=True)
+    return [{"id": p.id, "platform": p.platform, "url": p.url, "text": p.text, "created_at": p.created_at.isoformat(),
+             "lang": p.lang, "likes": p.likes, "shares": p.shares, "comments": p.comments, "views": p.views,
+             "lift": round(lifts[p.id], 1), "topic": p.labels["topic"], "hook": p.labels["hook"],
+             "format": p.labels["format"], "audience_fit": round(p.labels["audience_fit"], 2)}
+            for p in chosen[:limit]]
 
 
 def _norm(values: list[float]) -> list[float]:

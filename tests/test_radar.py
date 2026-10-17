@@ -62,6 +62,21 @@ class TestAnalysis(unittest.TestCase):
         self.assertEqual(analysis.stage_of(5.0, 0.01, 1), "estable")  # muy poca evidencia
 
 
+class TestFeed(unittest.TestCase):
+    def test_feed_is_ranked_by_lift_and_has_no_author(self):
+        feed = analysis.analyze(make_posts(), START, END)["feed"]
+        self.assertTrue(feed)
+        self.assertEqual([f["lift"] for f in feed], sorted((f["lift"] for f in feed), reverse=True))
+        self.assertNotIn("author_hash", feed[0])
+
+    def test_report_page_renders_feed_and_empty_state(self):
+        from radar import report
+        result = analysis.analyze(make_posts(), START, END)
+        html = report.render_html(result, {}, {"classifier": "test", "adapter": "test", "generated": "x"})
+        self.assertIn('"feed": [{', html)
+        self.assertIn('id="data">null<', report.render_empty())
+
+
 class TestPrivacy(unittest.TestCase):
     def test_scrub(self):
         out = scrub("Escríbeme a ana@correo.com o al +57 300 123 4567, cc @ana.perez")
@@ -84,6 +99,29 @@ class TestCommunityCSV(unittest.TestCase):
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0].platform, "linkedin")
         self.assertEqual(posts[0].likes, 120)
+
+
+class TestZenAdapter(unittest.TestCase):
+    def test_parses_fenced_json_and_fills_missing_topics(self):
+        import json
+        import os
+        from unittest import mock
+
+        import httpx
+
+        from radar import adapt
+
+        topics = analysis.analyze(make_posts(), START, END)["topics"][:2]
+        item = {"topic_id": topics[0]["id"], "por_que_funciona": "x", "angulo": "y", "ganchos": ["a", "b", "c"],
+                "formatos": {"linkedin": "1", "instagram": "2", "tiktok": "3", "youtube": "4"}, "cuidado": "z"}
+        content = "```json\n" + json.dumps({"temas": [item]}) + "\n```"
+        transport = httpx.MockTransport(lambda req: httpx.Response(200, json={"choices": [{"message": {"content": content}}]}))
+        real_client = httpx.Client
+        with mock.patch.dict(os.environ, {"OPENCODE_API_KEY": "test"}), \
+             mock.patch("httpx.Client", lambda **kw: real_client(transport=transport, **kw)):
+            out = adapt._with_zen(topics)
+        self.assertEqual(out[topics[0]["id"]]["angulo"], "y")
+        self.assertIn(topics[1]["id"], out)  # completado con plantilla
 
 
 if __name__ == "__main__":

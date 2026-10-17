@@ -136,7 +136,7 @@ def _with_templates(topics: list[dict]) -> dict[str, dict]:
         reasons = []
         # Solo se menciona una señal si rinde claramente por encima de la mediana del tema.
         if w["hooks"] and w["hooks"][0]["lift"] >= 1.2:
-            reasons.append(f"las piezas que {config.HOOKS[hook].lower()} rinden {w['hooks'][0]['lift']}× la mediana del tema")
+            reasons.append(f"las piezas cuyo gancho es «{config.HOOKS[hook].lower()}» rinden {w['hooks'][0]['lift']}× la mediana del tema")
         if w["formats"] and w["formats"][0]["lift"] >= 1.2:
             reasons.append(f"el formato «{config.FORMATS[fmt].lower()}» rinde {w['formats'][0]['lift']}× la mediana")
         if w["timing"] and w["timing"][0]["lift"] >= 1.2:
@@ -150,9 +150,9 @@ def _with_templates(topics: list[dict]) -> dict[str, dict]:
             "topic_id": t["id"],
             "por_que_funciona": ("Hipótesis: " + "; ".join(reasons) + ".") if reasons else "Pocas piezas con interacción medible; revisar ejemplos manualmente.",
             "angulo": f"Bajar «{short}» a decisiones concretas para líderes de equipos en LatAm: qué cambia, qué probar esta semana y qué ignorar.",
-            "ganchos": [HOOK_TEMPLATES[hook].format(tema=short, accion=f"aprovechando {short}"),
-                        HOOK_TEMPLATES["lista_o_guia"].format(tema=short),
-                        HOOK_TEMPLATES["advertencia"].format(tema=short)],
+            # El gancho que mejor rinde va primero; se completa con otros dos distintos.
+            "ganchos": [HOOK_TEMPLATES[h].format(tema=short, accion=f"aprovechando {short}")
+                        for h in dict.fromkeys([hook, "lista_o_guia", "advertencia", "contraintuitivo"])][:3],
             "formatos": FORMAT_BY_PLATFORM.get(fmt, FORMAT_BY_PLATFORM["tutorial_paso_a_paso"]),
             "cuidado": ("Tema muy técnico: traducir a impacto de negocio." if t["technical"] > 0.5 else
                         "Tema saturado: diferenciarse con un caso regional." if t["stage"] == "saturado" else
@@ -161,15 +161,82 @@ def _with_templates(topics: list[dict]) -> dict[str, dict]:
     return out
 
 
+ZEN_URL = "https://opencode.ai/inference/openai/v1/chat/completions"
+# Los modelos "-free" de Zen solo funcionan dentro de la app OpenCode (la API responde
+# FreeTierError), así que aquí se usa uno de pago barato: US$0,15 / 0,50 por millón de tokens
+# de entrada / salida, menos de un centavo por reporte. Lista y precios: https://opencode.ai/docs/zen/
+ZEN_MODEL = os.environ.get("RADAR_ZEN_MODEL", "glm-5.3-flash")
+
+ZEN_FORMAT = """
+Responde SOLO con un objeto JSON, sin texto adicional ni bloques de código, con esta forma:
+{"temas": [{"topic_id": "...", "por_que_funciona": "...", "angulo": "...",
+  "ganchos": ["...", "...", "..."],
+  "formatos": {"linkedin": "...", "instagram": "...", "tiktok": "...", "youtube": "..."},
+  "cuidado": "..."}]}
+Incluye un elemento por cada tema recibido, con el mismo topic_id."""
+
+
+def _parse_json(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+    start, end = text.find("{"), text.rfind("}")
+    return json.loads(text[start:end + 1])
+
+
+def _valid(item: dict) -> bool:
+    required = {"topic_id", "por_que_funciona", "angulo", "ganchos", "formatos", "cuidado"}
+    return (required <= item.keys() and isinstance(item["ganchos"], list)
+            and isinstance(item["formatos"], dict))
+
+
+def _with_zen(topics: list[dict]) -> dict[str, dict]:
+    """Redacción con un modelo de OpenCode Zen (API compatible con OpenAI)."""
+    import httpx
+
+    body = {
+        "model": ZEN_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM + "\n" + ZEN_FORMAT},
+            {"role": "user", "content": json.dumps(_evidence(topics), ensure_ascii=False)},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    headers = {"Authorization": f"Bearer {os.environ['OPENCODE_API_KEY']}"}
+    with httpx.Client(timeout=180) as client:
+        r = client.post(ZEN_URL, json=body, headers=headers)
+        if r.status_code == 400:  # no todos los modelos aceptan response_format
+            body.pop("response_format")
+            r = client.post(ZEN_URL, json=body, headers=headers)
+        r.raise_for_status()
+    content = r.json()["choices"][0]["message"]["content"]
+    items = [t for t in _parse_json(content).get("temas", []) if isinstance(t, dict) and _valid(t)]
+    out = {t["topic_id"]: t for t in items}
+    # Si el modelo omitió algún tema o devolvió uno incompleto, ese tema usa plantilla.
+    missing = [t for t in topics if t["id"] not in out]
+    if len(missing) == len(topics):
+        raise RuntimeError("la respuesta no trajo temas válidos")
+    if missing:
+        log.warning("Zen omitió %d temas; se completan con plantillas.", len(missing))
+        out.update(_with_templates(missing))
+    return out
+
+
 def has_claude_credentials() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
                 or os.path.isdir(os.path.expanduser("~/.config/anthropic")))
 
 
-def adapt(topics: list[dict], use_claude: bool) -> tuple[dict[str, dict], str]:
-    if use_claude:
+def adapt(topics: list[dict], use_llm: bool) -> tuple[dict[str, dict], str]:
+    """Redacta con Claude si hay credenciales, si no con Zen, y si no con plantillas."""
+    if use_llm and has_claude_credentials():
         try:
             return _with_claude(topics), f"claude ({CLAUDE_MODEL})"
         except Exception as e:
-            log.warning("No se pudo usar Claude (%s); se usan plantillas.", e)
+            log.warning("No se pudo usar Claude (%s).", e)
+    if use_llm and os.environ.get("OPENCODE_API_KEY"):
+        try:
+            return _with_zen(topics), f"opencode zen ({ZEN_MODEL})"
+        except Exception as e:
+            log.warning("No se pudo usar OpenCode Zen (%s).", e)
     return _with_templates(topics), "plantillas"

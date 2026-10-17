@@ -24,8 +24,42 @@ from .models import Post
 
 log = logging.getLogger(__name__)
 
-JEV_MODEL = os.environ.get("RADAR_JEV_MODEL", "jev-latest")
 CACHE = Path(os.environ.get("RADAR_CACHE", "data/cache/labels.jsonl"))
+
+# Jev se puede usar directo en TypeSafe o a través de DigitalOcean Serverless Inference, que
+# reenvía el mismo endpoint /v1/systemone. Si hay clave de TypeSafe, se prefiere esa.
+DO_BASE_URL = "https://inference.do-ai.run"
+DO_JEV_MODEL = "typesafe-jev-1.13.0"
+# OpenCode Zen también reenvía /v1/systemone; "jev-1.13-free" es gratis por tiempo limitado.
+ZEN_BASE_URL = "https://opencode.ai/inference/systemone"
+ZEN_JEV_MODEL = "jev-1.13-free"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api"  # el SDK agrega /v1/systemone
+
+
+def jev_provider() -> str | None:
+    if os.environ.get("TYPESAFE_API_KEY"):
+        return "typesafe"
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return "openrouter"
+    if os.environ.get("MODEL_ACCESS_KEY"):
+        return "digitalocean"
+    if os.environ.get("OPENCODE_API_KEY"):
+        return "opencode"
+    return None
+
+
+def _client_kwargs() -> dict:
+    provider = jev_provider()
+    if provider == "openrouter":
+        return {"api_key": os.environ["OPENROUTER_API_KEY"], "base_url": OPENROUTER_BASE_URL,
+                "model": os.environ.get("RADAR_JEV_MODEL", "jev-latest")}
+    if provider == "digitalocean":
+        return {"api_key": os.environ["MODEL_ACCESS_KEY"], "base_url": DO_BASE_URL,
+                "model": os.environ.get("RADAR_JEV_MODEL", DO_JEV_MODEL)}
+    if provider == "opencode":
+        return {"api_key": os.environ["OPENCODE_API_KEY"], "base_url": ZEN_BASE_URL,
+                "model": os.environ.get("RADAR_JEV_MODEL", ZEN_JEV_MODEL)}
+    return {"model": os.environ.get("RADAR_JEV_MODEL", "jev-latest")}
 
 AUDIENCE_LEVELS = [
     "Irrelevant for this audience",
@@ -113,7 +147,7 @@ async def _classify_jev(posts: list[Post], concurrency: int) -> int:
     sem = asyncio.Semaphore(concurrency)
     tokens = 0
 
-    async with AsyncTypeSafeClient(model=JEV_MODEL) as client:
+    async with AsyncTypeSafeClient(**_client_kwargs()) as client:
         async def one(p: Post):
             nonlocal tokens
             async with sem:
@@ -151,7 +185,7 @@ def filter_terms(terms: list[dict], keep: int = 15) -> list[dict]:
     if not terms:
         return terms
     words = [t["term"] for t in terms]
-    with TypeSafeClient(model=JEV_MODEL) as client:
+    with TypeSafeClient(**_client_kwargs()) as client:
         r = client.system_one(
             {"terms": words},
             {f"t{i}": Noul(instructions=f"Is `terms[{i}]` the name of a specific AI product, model, company, "
@@ -239,10 +273,92 @@ def _append_cache(posts: list[Post]) -> None:
                 f.write(json.dumps({"id": p.id, "labels": p.labels}, ensure_ascii=False) + "\n")
 
 
-def classify(posts: list[Post], use_jev: bool, concurrency: int = 16) -> dict:
+# --- Modelo local (sin claves) ------------------------------------------------------------
+# Respaldo cuando no hay acceso a Jev: un modelo de embeddings multilingüe que corre en el
+# computador (unos 220 MB, se descarga una vez). Compara el significado de cada pieza con la
+# descripción de cada tema y de la audiencia. Es menos preciso que Jev y sus "probabilidades"
+# no están calibradas; gancho, formato y publicador siguen usando reglas.
+
+LOCAL_MODEL = os.environ.get("RADAR_LOCAL_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+TOPIC_TEMPERATURE = 0.02  # más bajo = distribución más concentrada en el tema más parecido
+
+ANCHORS = {
+    "ai": "Inteligencia artificial, modelos de lenguaje, ChatGPT, chatbots y empresas de IA",
+    "audience": config.AUDIENCE,
+    "technical": "Detalles técnicos de programación, código, arquitectura de modelos e ingeniería de machine learning para desarrolladores",
+    "practical": "Guía práctica con pasos concretos, consejos y herramientas que un profesional puede aplicar hoy en su trabajo",
+    "hype": "Titular exagerado y sensacionalista con promesas increíbles, clickbait sin sustancia",
+}
+
+
+def local_available() -> bool:
+    try:
+        import fastembed  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _percentile(values):
+    """Posición relativa de cada valor dentro del lote (0 = el menor, 1 = el mayor)."""
+    import numpy as np
+
+    ranks = np.argsort(np.argsort(values))
+    return ranks / max(1, len(values) - 1)
+
+
+def _classify_local(posts: list[Post]) -> None:
+    import numpy as np
+    from fastembed import TextEmbedding
+
+    model = TextEmbedding(LOCAL_MODEL)
+
+    def embed(texts):
+        m = np.array(list(model.embed(texts)))
+        return m / np.linalg.norm(m, axis=1, keepdims=True)
+
+    topic_ids = list(config.TOPICS)
+    topics = embed([config.TOPICS[t] for t in topic_ids])
+    anchors = dict(zip(ANCHORS, embed(list(ANCHORS.values()))))
+    X = embed([p.text[:1000] for p in posts])
+
+    sims = X @ topics.T
+    logits = sims / TOPIC_TEMPERATURE
+    probs = np.exp(logits - logits.max(axis=1, keepdims=True))
+    probs /= probs.sum(axis=1, keepdims=True)
+
+    a = {k: X @ v for k, v in anchors.items()}
+    # Encaje = cercanía a la audiencia menos cercanía a lo puramente técnico, relativa al lote.
+    fit = _percentile(a["audience"] - a["technical"])
+    practical, technical, hype = _percentile(a["practical"]), _percentile(a["technical"]), _percentile(a["hype"])
+
+    for i, p in enumerate(posts):
+        rules = _classify_heuristic(p)
+        topic_probs = {t: float(probs[i, j]) for j, t in enumerate(topic_ids)}
+        p.labels = {
+            **rules,
+            "classifier": "local",
+            "is_ai": 1.0 if rules["is_ai"] or a["ai"][i] >= 0.35 else 0.0,
+            "topic": max(topic_probs, key=topic_probs.get),
+            "topic_probs": topic_probs,
+            "topic_confidence": max(topic_probs.values()),
+            "audience_fit": float(fit[i]),
+            "practical": float(practical[i]),
+            "technical": float(technical[i]),
+            "hype": float(hype[i]),
+        }
+
+
+def classify(posts: list[Post], use_jev: bool, use_local: bool = False, concurrency: int = 16) -> dict:
     """Etiqueta las piezas in situ. Devuelve estadísticas del proceso para el reporte."""
-    stats = {"classifier": "jev" if use_jev else "heuristico", "cached": 0, "classified": 0, "input_tokens": 0}
-    if not use_jev:
+    mode = "jev" if use_jev else "local" if use_local else "heuristico"
+    stats = {"classifier": mode, "cached": 0, "classified": 0, "input_tokens": 0}
+    if mode == "local":
+        log.info("Clasificando %d piezas con el modelo local %s…", len(posts), LOCAL_MODEL)
+        _classify_local(posts)
+        stats["classified"] = len(posts)
+        return stats
+    if mode == "heuristico":
         for p in posts:
             p.labels = _classify_heuristic(p)
         stats["classified"] = len(posts)
@@ -257,11 +373,11 @@ def classify(posts: list[Post], use_jev: bool, concurrency: int = 16) -> dict:
         else:
             pending.append(p)
     if pending:
-        log.info("Clasificando %d piezas con %s (%d en caché)…", len(pending), JEV_MODEL, stats["cached"])
+        log.info("Clasificando %d piezas con %s (%d en caché)…", len(pending), f"{_client_kwargs()['model']} vía {jev_provider()}", stats["cached"])
         try:
             stats["input_tokens"] = asyncio.run(_classify_jev(pending, concurrency))
         except InvalidKey:
-            raise SystemExit("TYPESAFE_API_KEY inválida: revisa la clave en https://console.typesafe.ai/keys")
+            raise SystemExit(f"Clave de Jev inválida ({jev_provider()}): revisa TYPESAFE_API_KEY, OPENROUTER_API_KEY, MODEL_ACCESS_KEY u OPENCODE_API_KEY")
         done = [p for p in pending if p.labels]
         _append_cache(done)
         stats["classified"] = len(done)

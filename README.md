@@ -43,7 +43,9 @@ Hoy eso depende de servicios de scraping de pago que cuestan miles de dólares a
 | **¿Por qué funciona?** | Jev etiqueta el gancho, el formato y el tipo de publicador de cada pieza; el código compara la interacción de cada grupo contra la mediana del tema y la franja horaria. |
 | **¿Encaja con nuestra audiencia?** | Jev puntúa cada pieza en una escala de 0 a 3 de utilidad para ejecutivos y equipos de LatAm, y responde si es accionable, técnica, puro humo o de la región. |
 
-Por último, Claude (opcional) redacta para cada tema el ángulo, tres ganchos y el formato recomendado por plataforma. Sin Claude, el radar arma la recomendación con plantillas.
+Por último, un modelo generativo redacta para cada tema el ángulo, tres ganchos y el formato recomendado por plataforma: Claude si hay clave de Anthropic, o un modelo de OpenCode Zen (`glm-5.3-flash`, menos de un centavo por reporte). Sin ninguno, el radar arma la recomendación con plantillas.
+
+> Los modelos gratuitos de chat de Zen (`*-free`) solo funcionan dentro de la app OpenCode; desde un script la API responde `FreeTierError`. Por eso la redacción usa un modelo de pago barato. Jev sí está disponible gratis (`jev-1.13-free`) por tiempo limitado.
 
 **Costo:** Jev cobra US$0,042 por millón de tokens de entrada. Una corrida típica de unas 3.000 piezas cuesta alrededor de US$0,10, y las piezas ya clasificadas quedan en caché.
 
@@ -88,6 +90,8 @@ Toda la aritmética vive en código, como recomienda TypeSafe: el modelo solo to
 - ✅ Explicación del "por qué funcionó" por tema (gancho, formato, franja, publicador, idioma)
 - ✅ Puntaje de relevancia para la audiencia objetivo
 - ✅ Recomendación de adaptación (ángulo, 3 ganchos, formato por plataforma, cuidado)
+- ✅ App web local: tablero con mapa de oportunidades, ranking, feed de publicaciones destacadas, historial y botón para actualizar
+- ✅ Feed vertical estilo TikTok con las publicaciones que más rindieron frente a su plataforma: pestañas Para ti / Útiles / Recientes / Guardados, filtros por plataforma y tema, doble clic para guardar y botón para saltar a la adaptación del tema
 - ✅ Reporte HTML / Markdown / JSON
 - ✅ Entrada de comunidad por CSV para LinkedIn, Instagram y TikTok
 
@@ -106,8 +110,8 @@ Términos emergentes: gemini argon (24 piezas, 16 autores) · satya nadella · t
 ## Stack tecnológico
 
 - **Lenguaje:** Python 3.12+
-- **Modelo de decisiones:** Jev (TypeSafe) vía `typesafe-sdk`, para clasificar, puntuar y filtrar
-- **Modelo generativo (opcional):** Claude (`claude-opus-5-5`), para redactar ángulos y ganchos con salida estructurada
+- **Modelo de decisiones:** Jev (TypeSafe) vía `typesafe-sdk`, para clasificar, puntuar y filtrar. Se conecta directo a TypeSafe, por DigitalOcean o por OpenCode Zen
+- **Modelo generativo (opcional):** Claude (`claude-opus-5-5`) u OpenCode Zen (`glm-5.3-flash`), para redactar ángulos y ganchos
 - **Fuentes de datos:** Bluesky AppView pública, API de Hacker News (Algolia), RSS oficial de YouTube, RSS de Google News y un CSV de comunidad
 - **Almacenamiento:** caché JSONL local de clasificaciones (`data/cache/`)
 - **Interfaz:** CLI y reporte HTML estático
@@ -116,8 +120,12 @@ Términos emergentes: gemini argon (24 piezas, 16 autores) · satya nadella · t
 
 ### Requisitos
 - Python 3.12 o superior
-- `TYPESAFE_API_KEY` (recomendada): https://console.typesafe.ai/keys
-- `ANTHROPIC_API_KEY` (opcional)
+- Una clave de Jev, por cualquiera de estas vías:
+  - `TYPESAFE_API_KEY`: https://console.typesafe.ai/keys
+  - `OPENROUTER_API_KEY`: https://openrouter.ai/settings/keys. OpenRouter expone el mismo endpoint System One (`https://openrouter.ai/api/v1/systemone`), así que se usa el SDK de TypeSafe sin cambios.
+  - `MODEL_ACCESS_KEY` de DigitalOcean: Control Panel → **Inference → Serverless Inference → Model Access Keys**. Jev es un modelo de terceros, así que la cuenta debe estar en un nivel que lo permita.
+  - `OPENCODE_API_KEY` de OpenCode Zen (https://opencode.ai/zen): usa `jev-1.13-free`, gratis por tiempo limitado.
+- Opcional, para redactar ángulos y ganchos: `ANTHROPIC_API_KEY` (Claude) u `OPENCODE_API_KEY` (Zen, modelo `glm-5.3-flash`)
 
 ### Pasos
 
@@ -127,8 +135,12 @@ cd creativIA
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env          # completar las claves
-.venv/bin/python -m radar     # genera out/radar-AAAA-MM-DD.html
+.venv/bin/python -m radar.web # abre la app en http://localhost:8000
 ```
+
+En la app, **Actualizar radar** corre los cuatro pasos y muestra el progreso; el selector de fecha abre reportes anteriores y la pestaña **Feed** muestra las publicaciones destacadas. La app solo escucha en este computador.
+
+También se puede correr por consola, sin la app: `.venv/bin/python -m radar` genera `out/radar-AAAA-MM-DD.html`, que se abre directo en el navegador.
 
 Opciones útiles:
 
@@ -136,7 +148,7 @@ Opciones útiles:
 .venv/bin/python -m radar --days 28 --top 10 --per-day 40
 .venv/bin/python -m radar --platforms bluesky,hackernews
 .venv/bin/python -m radar --community data/comunidad.csv   # piezas aportadas por el equipo
-.venv/bin/python -m radar --no-jev --no-claude              # modo sin claves (demo)
+.venv/bin/python -m radar --no-jev --no-llm                 # modo sin claves (demo)
 .venv/bin/python -m unittest discover tests                 # pruebas, sin red
 ```
 
@@ -146,12 +158,22 @@ Para ajustar la audiencia, la taxonomía, las consultas, los canales de YouTube 
 
 | Variable | Descripción |
 |---|---|
-| `TYPESAFE_API_KEY` | Clasificación con Jev. Sin ella se usa un clasificador por palabras clave, mucho menos preciso. |
-| `ANTHROPIC_API_KEY` | Redacción de ángulos y ganchos con Claude. Sin ella se usan plantillas. |
+| `TYPESAFE_API_KEY` | Clasificación con Jev directo en TypeSafe. Si no hay ninguna clave de Jev, se usa el modelo local (ver abajo). |
+| `OPENROUTER_API_KEY` | Alternativa: Jev vía OpenRouter (modelo `jev-latest`). Se usa solo si no hay `TYPESAFE_API_KEY`. |
+| `MODEL_ACCESS_KEY` | Alternativa: Jev vía DigitalOcean Serverless Inference (modelo `typesafe-jev-1.13.0`). Se usa solo si no hay `TYPESAFE_API_KEY` ni `OPENROUTER_API_KEY`. |
+| `OPENCODE_API_KEY` | OpenCode Zen: Jev gratis (`jev-1.13-free`) si no hay clave de TypeSafe, OpenRouter ni DigitalOcean, y redacción con `glm-5.3-flash` si no hay clave de Claude. |
+| `ANTHROPIC_API_KEY` | Redacción de ángulos y ganchos con Claude. Sin ella se usa Zen, y sin Zen, plantillas. |
+| `RADAR_ZEN_MODEL` | Modelo de Zen para redactar (por defecto `glm-5.3-flash`). |
 | `RADAR_HASH_SALT` | Sal para el hash de autores. |
 | `RADAR_JEV_MODEL` | Modelo de Jev (por defecto `jev-latest`). |
 
 > **Nunca subas claves reales al repositorio.** `.env` ya está en `.gitignore`.
+
+### Sin clave de Jev: modelo local
+
+Si no hay ninguna clave de Jev, el radar clasifica con un modelo de embeddings multilingüe que corre en el computador (`paraphrase-multilingual-MiniLM-L12-v2`, unos 220 MB que se descargan la primera vez, vía `fastembed`). Compara el significado de cada pieza con la descripción de cada tema y de la audiencia. No necesita cuentas, tarjetas ni internet para clasificar, y tarda unos 2–3 minutos con 3.000 piezas.
+
+Es menos preciso que Jev: el encaje con la audiencia es relativo a la muestra (percentil), no una probabilidad calibrada, y el gancho, el formato y el publicador se detectan con reglas. Con `--no-local` se usa en su lugar el clasificador por palabras clave.
 
 ### CSV de comunidad (LinkedIn, Instagram, TikTok)
 
@@ -177,7 +199,7 @@ linkedin,https://www.linkedin.com/posts/...,"Texto del post",2026-10-15T10:00:00
 - **YouTube** no entra en el cálculo de crecimiento: su RSS solo trae los últimos 15 videos por canal, lo que fabricaría "crecimiento". Sí se usa para explicar y dar ejemplos.
 - **Muestra, no censo:** la tendencia se mide sobre las piezas con más interacción de cada día, no sobre todo lo publicado.
 - **Idioma:** Jev rinde mejor en inglés; las preguntas están en inglés y las piezas en español o inglés. Conviene validar con una muestra etiquetada por el equipo.
-- **Ruta de Jev sin probar con clave real:** el formato de la petición se validó contra la API (que respondió 401 por la clave de prueba), pero en este entorno no había una clave válida. La primera corrida con `TYPESAFE_API_KEY` es la prueba real.
+- **Ruta de Jev sin probar con clave real** (la demo puede correr con el modelo local): el formato de la petición se validó contra la API (que respondió 401 por la clave de prueba), pero en este entorno no había una clave válida. La primera corrida con `TYPESAFE_API_KEY` es la prueba real.
 - Las explicaciones del "por qué funcionó" son **hipótesis** basadas en correlación, no causalidad demostrada. Conviene validarlas con el criterio editorial del equipo.
 
 ## Próximos pasos
