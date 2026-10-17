@@ -93,8 +93,21 @@ def _payload(result: dict, adaptations: dict, meta: dict, n: int) -> dict:
     }
 
 
-def render_html(result: dict, adaptations: dict, meta: dict, n: int = 10) -> str:
-    data = json.dumps(_payload(result, adaptations, meta, n), ensure_ascii=False, default=str)
+def latest_backtest(out_dir: Path) -> dict | None:
+    """Resumen del backtest más reciente en out/ (python -m radar.backtest), si existe."""
+    files = sorted(out_dir.glob("backtest-*.json"), reverse=True)
+    if not files:
+        return None
+    bt = json.loads(files[0].read_text(encoding="utf-8"))
+    last = bt["folds"][-1] if bt["folds"] else None
+    return {"summary": bt["summary"], "meta": bt["meta"], "top": bt["top"],
+            "last": last and {"cut": last["cut"], "next_end": last["next_end"],
+                              "topics": [{k: r[k] for k in ("label", "stage", "share_base", "share_next")}
+                                         for r in last["topics"][: bt["top"]]]}}
+
+
+def render_html(result: dict, adaptations: dict, meta: dict, n: int = 10, backtest: dict | None = None) -> str:
+    data = json.dumps({**_payload(result, adaptations, meta, n), "backtest": backtest}, ensure_ascii=False, default=str)
     # Evita que un texto con "</script>" cierre la etiqueta de datos.
     data = data.replace("<", "\\u003c")
     return HTML_TEMPLATE.replace("__N__", str(n)).replace("__DATA__", data)
@@ -381,6 +394,36 @@ body:not(.feed-mode) .tk-nav{display:none}
 .tk-note{text-align:center;color:var(--muted);font-size:11px;margin:0;padding:0 16px 8px}
 
 /* Progreso al actualizar */
+.add-btn{display:inline-flex;align-items:center;gap:6px;background:var(--s2);color:var(--ink);border:0;border-radius:8px;padding:8px 12px;font-weight:700;font-size:13px;cursor:pointer}
+.add-btn:hover{background:var(--s3)}
+.form{display:grid;gap:12px}
+.form label{display:grid;gap:5px;font-size:13px;font-weight:600}
+.form input,.form select,.form textarea{width:100%;background:var(--s2);color:var(--ink);border:1px solid transparent;border-radius:8px;padding:9px 11px;font:inherit;font-size:14px;font-weight:400}
+.form input:focus,.form select:focus,.form textarea:focus{outline:none;border-color:var(--blue)}
+.form textarea{min-height:96px;resize:vertical}
+.form .row2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+.form .row4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.form small{color:var(--muted);font-weight:400}
+.form .check{display:flex;gap:8px;align-items:flex-start;font-weight:500}
+.form .check input{width:auto;margin-top:3px}
+.form-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center}
+.form-msg{font-size:13px;margin-right:auto}
+.form-msg.err{color:var(--pink)}.form-msg.ok{color:var(--up)}
+.ghost{background:none;border:0;color:var(--muted);font-weight:600;cursor:pointer;padding:8px 10px}
+.run-card.wide{width:min(560px,100%);max-height:calc(100dvh - 32px);overflow:auto}
+.proof{margin-top:34px;border:1px solid var(--line);border-radius:14px;padding:18px 18px 14px}
+.proof h2{margin:0 0 2px;font-size:18px;font-weight:800}
+.proof>p{margin:0 0 14px;color:var(--muted);font-size:14px}
+.proof-k{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.proof-k div{background:var(--s2);border-radius:10px;padding:12px}
+.proof-k b{display:block;font-size:26px;font-weight:800;letter-spacing:-.02em}
+.proof-k span{font-size:12.5px;color:var(--muted);line-height:1.35;display:block}
+.proof-bars{display:grid;grid-template-columns:150px minmax(0,1fr) 48px;gap:8px 10px;align-items:center;margin:14px 0 6px;font-size:13px}
+.proof-bars i{display:block;height:10px;border-radius:5px;background:var(--s2);overflow:hidden}
+.proof-bars i em{display:block;height:100%;background:var(--ig)}
+.proof-bars i em.plain{background:var(--muted)}
+.proof .cap{font-size:12.5px;color:var(--muted);margin:8px 0 0}
+@media (max-width:600px){.proof-k{grid-template-columns:1fr}.proof-bars{grid-template-columns:110px minmax(0,1fr) 40px}.form .row4{grid-template-columns:repeat(2,minmax(0,1fr))}.add-btn .run-label{display:none}}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:grid;place-items:center;z-index:50;padding:16px}
 .run-card{background:var(--s1);border-radius:16px;padding:24px;width:min(440px,100%)}
 .run-card h3{margin:0 0 4px;font-size:20px;font-weight:800}
@@ -439,6 +482,7 @@ body:not(.feed-mode) .tk-nav{display:none}
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">Radar IA</span></div>
   <div class="seg" role="group" aria-label="Vista"><button data-view="radar" aria-pressed="true">Tendencias</button><button data-view="feed" aria-pressed="false">Feed</button></div>
   <div class="actions"><select class="hist" id="hist" aria-label="Reportes anteriores" hidden></select>
+    <button class="add-btn" id="add" aria-label="Aportar una publicación" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="run-label">Aportar</span></button>
     <button class="run-btn" id="run" aria-label="Actualizar radar" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg><span class="run-label">Actualizar</span></button>
     <span class="mode" id="mode"><i></i><span></span></span></div>
 </div></header>
@@ -452,6 +496,7 @@ body:not(.feed-mode) .tk-nav{display:none}
   <div class="head"><div><h1>Tendencias de la semana</h1><p id="sub"></p></div><div class="chips" id="filters"></div></div>
   <div class="grid" id="grid"></div>
   <section class="sect"><h2>Palabras que están sonando</h2><p>Se dispararon esta semana y todavía no tienen tema propio.</p><div class="tags" id="terms"></div></section>
+  <section class="proof" id="proof" hidden></section>
   <details class="fold" id="map-fold"><summary>Mapa de oportunidades</summary><div class="map"><svg id="map" viewBox="0 0 640 380" role="img" aria-label="Crecimiento frente a utilidad para la audiencia"></svg></div>
     <p class="cap">Más a la derecha, más crece. Más arriba, más útil para la audiencia. El tamaño es cuánto se habla del tema.</p></details>
   <details class="fold"><summary>Cómo se calcula</summary><ul id="method"></ul></details>
@@ -482,6 +527,27 @@ body:not(.feed-mode) .tk-nav{display:none}
 <div class="overlay" id="overlay" hidden><div class="run-card" role="dialog" aria-modal="true" aria-labelledby="run-t">
   <h3 id="run-t">Actualizando el radar</h3><p>Toma entre 20 segundos y unos minutos.</p>
   <ol class="steps" id="steps"></ol><div class="run-err" id="run-err" hidden></div></div></div>
+
+<div class="overlay" id="contrib" hidden><div class="run-card wide" role="dialog" aria-modal="true" aria-labelledby="contrib-t">
+  <h3 id="contrib-t">Aportar una publicación</h3>
+  <p>¿Viste algo de IA funcionando en LinkedIn, Instagram o TikTok? Agrégalo y entra en la próxima actualización. Solo contenido público.</p>
+  <form class="form" id="contrib-form" novalidate>
+    <label>Enlace<input name="url" type="url" placeholder="https://www.linkedin.com/posts/…" required></label>
+    <div class="row2"><label>Red<select name="platform">
+        <option value="linkedin">LinkedIn</option><option value="instagram">Instagram</option><option value="tiktok">TikTok</option>
+        <option value="youtube">YouTube</option><option value="x">X</option><option value="facebook">Facebook</option><option value="threads">Threads</option><option value="otra">Otra</option></select></label>
+      <label>Fecha de publicación<input name="published_at" type="date" required></label></div>
+    <label>Texto de la publicación<textarea name="text" placeholder="Pega aquí el texto o la descripción del video" required></textarea>
+      <small>Se borran automáticamente menciones, correos y teléfonos.</small></label>
+    <div class="row4"><label>Me gusta<input name="likes" type="number" min="0" inputmode="numeric"></label>
+      <label>Comentarios<input name="comments" type="number" min="0" inputmode="numeric"></label>
+      <label>Compartidos<input name="shares" type="number" min="0" inputmode="numeric"></label>
+      <label>Vistas<input name="views" type="number" min="0" inputmode="numeric"></label></div>
+    <label>Publicado por <small>(solo si es una marca o un medio; nunca nombres de personas)</small><input name="publisher" maxlength="80"></label>
+    <label class="check"><input type="checkbox" name="public"> Es una publicación pública, la vi sin iniciar sesión en una cuenta ajena y no tiene datos personales.</label>
+    <div class="form-actions"><span class="form-msg" id="contrib-msg" role="status"></span>
+      <button type="button" class="ghost" id="contrib-close">Cerrar</button><button class="run-btn" type="submit">Guardar aporte</button></div>
+  </form></div></div>
 
 <script type="application/json" id="data">__DATA__</script>
 <script>
@@ -550,8 +616,44 @@ document.addEventListener("click", e => {
   if (e.target.closest("#run,[data-run]")) startRun();
   if (e.target.closest("#run-close")) $("#overlay").hidden = true;
 });
+// Aportes de la comunidad: LinkedIn, Instagram y TikTok entran por aquí, sin login ni scraping.
+const PLAT_BY_HOST = [["linkedin.", "linkedin"], ["instagram.", "instagram"], ["tiktok.", "tiktok"], ["youtube.", "youtube"], ["youtu.be", "youtube"],
+                      ["x.com", "x"], ["twitter.", "x"], ["facebook.", "facebook"], ["threads.", "threads"]];
+const contribForm = $("#contrib-form");
+function openContrib() {
+  $("#contrib").hidden = false;
+  contribForm.published_at.value ||= new Date().toISOString().slice(0, 10);
+  $("#contrib-msg").textContent = "";
+  contribForm.url.focus();
+}
+contribForm.url.addEventListener("input", () => {
+  const hit = PLAT_BY_HOST.find(([h]) => contribForm.url.value.toLowerCase().includes(h));
+  if (hit) contribForm.platform.value = hit[1];
+});
+contribForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  const body = Object.fromEntries(new FormData(contribForm));
+  body.public = contribForm.public.checked;
+  const msg = $("#contrib-msg");
+  msg.className = "form-msg"; msg.textContent = "Guardando…";
+  try {
+    const r = await fetch("/api/community", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    const keep = {platform: body.platform, published_at: body.published_at};
+    contribForm.reset(); contribForm.platform.value = keep.platform; contribForm.published_at.value = keep.published_at;
+    msg.className = "form-msg ok"; msg.textContent = `¡Gracias! Van ${j.count} aportes. Entra en la próxima actualización.`;
+  } catch (err) { msg.className = "form-msg err"; msg.textContent = err.message || "No se pudo guardar"; }
+});
+document.addEventListener("click", e => {
+  if (e.target.closest("#add")) openContrib();
+  if (e.target.closest("#contrib-close") || e.target.id === "contrib") $("#contrib").hidden = true;
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#contrib").hidden) $("#contrib").hidden = true; });
+
 if (APP) {
   $("#run").hidden = false;
+  $("#add").hidden = false;
   if (APP.reports.length) {
     const h = $("#hist"); h.hidden = false;
     h.innerHTML = APP.reports.map(r => `<option value="${esc(r)}" ${r === APP.current ? "selected" : ""}>${esc(fmtDay(r.replace("radar-", "")))}</option>`).join("");
@@ -570,7 +672,7 @@ const C = D.counts, mode = D.meta.classifier;
 const FEED = D.feed || [];
 $("#mode").classList.add(mode);
 $("#mode span").textContent = {jev: "Jev", local: "Modo local", heuristico: "Modo básico"}[mode] || mode;
-$("#mode").title = mode === "jev" ? "Clasificado con Jev" : "Sin clave de Jev: resultados aproximados";
+$("#mode").title = mode === "jev" ? "Clasificado con Jev" : D.meta.jev_error ? `Jev no respondió (${D.meta.jev_error}); se usó el respaldo` : "Sin clave de Jev: resultados aproximados";
 $("#sub").innerHTML = `${fmtDay(D.window.split)} – ${fmtDay(D.window.end)} · ${C.ai.toLocaleString("es")} publicaciones · ${Object.keys(C.by_platform).length} fuentes` +
   (mode === "jev" ? "" : ` · <b>●</b> sin Jev, números aproximados`);
 
@@ -796,6 +898,35 @@ $("#method").innerHTML = [
   `Orden del ranking: ${esc(W8)}, con un extra por llegar temprano y un descuento por humo.`,
   "Solo contenido público. Los autores se guardan como un código irreversible y se borran menciones, correos y teléfonos.",
 ].map(x => `<li>${x}</li>`).join("");
+// ¿Acierta el radar? Resultado del backtest más reciente (python -m radar.backtest).
+const BT = D.backtest;
+if (BT && BT.summary.weeks) {
+  const S = BT.summary, pct = v => v == null ? "—" : `${Math.round(v * 100)}%`, x = v => v == null ? "—" : `${v.toFixed(2)}×`;
+  const bar = (v, plain) => `<i><em class="${plain ? "plain" : ""}" style="width:${Math.round((v || 0) * 100)}%"></em></i>`;
+  $("#proof").hidden = false;
+  $("#proof").innerHTML = `<h2>¿Acierta el radar?</h2>
+    <p>Corrimos el radar en ${S.weeks} semanas pasadas sin dejarlo ver el futuro y medimos qué pasó la semana siguiente.</p>
+    <div class="proof-k">
+      <div><b>${pct(S.radar_hit)}</b><span>de los temas de su top ${BT.top} siguieron por encima de lo normal la semana siguiente</span></div>
+      <div><b>${pct(S.rising_hit)}</b><span>de los temas que marcó «en crecimiento» o «naciente» siguieron arriba (${S.n_rising} casos)</span></div>
+      <div><b>${x(S.radar_lift)}</b><span>su participación habitual tuvieron esos temas la semana siguiente (los más populares: ${x(S.popular_lift)})</span></div>
+    </div>
+    <div class="proof-bars">
+      <span>Radar</span>${bar(S.radar_hit)}<b>${pct(S.radar_hit)}</b>
+      <span>Seguir lo más popular</span>${bar(S.popular_hit, 1)}<b>${pct(S.popular_hit)}</b>
+      <span>Cualquier tema</span>${bar(S.all_hit, 1)}<b>${pct(S.all_hit)}</b>
+    </div>
+    <p class="cap">«Por encima de lo normal»: más participación en la conversación que en sus dos semanas previas. Clasificador del backtest: ${esc(BT.meta.classifier)} · ${BT.meta.n_posts.toLocaleString("es")} publicaciones · ${esc(BT.meta.generated)}. Pocas semanas: es evidencia direccional, no una prueba estadística definitiva.</p>`;
+}
+
+const SRC_NAMES = {bluesky: "Bluesky", hackernews: "Hacker News", youtube: "YouTube", google_news: "Google News"};
+const community = Object.entries(C.by_platform).filter(([k]) => !(k in SRC_NAMES)).reduce((a, [, v]) => a + v, 0);
+$("#method").insertAdjacentHTML("beforeend", [
+  `Cobertura: Bluesky, Hacker News y Google News por API o RSS públicos; YouTube por el RSS oficial de 10 canales (no entra al cálculo de crecimiento porque solo trae los últimos videos). LinkedIn, Instagram y TikTok no tienen API pública sin login: entran solo por aportes de la comunidad (${community} en esta semana).`,
+  mode === "jev" && D.meta.jev_cost_usd != null
+    ? `Costo de esta actualización: US$${D.meta.jev_cost_usd.toFixed(4)} en Jev (${(D.meta.n_classified || 0).toLocaleString("es")} publicaciones nuevas; ${(D.meta.n_cached || 0).toLocaleString("es")} ya estaban clasificadas y no se pagan otra vez).`
+    : D.meta.jev_error ? `Jev no respondió en esta actualización (${esc(D.meta.jev_error)}); se usó el clasificador ${esc(mode)}.` : "",
+].filter(Boolean).map(x => `<li>${x}</li>`).join(""));
 $("#foot").textContent = `Generado ${D.meta.generated} · ` + Object.entries(C.by_platform).map(([k, v]) => `${k} ${v}`).join(" · ");
 
 // Feed vertical
@@ -942,7 +1073,7 @@ def write_outputs(result: dict, adaptations: dict, meta: dict, out_dir: Path, n:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d")
     paths = {"html": out_dir / f"radar-{stamp}.html", "md": out_dir / f"radar-{stamp}.md", "json": out_dir / f"radar-{stamp}.json"}
-    paths["html"].write_text(render_html(result, adaptations, meta, n), encoding="utf-8")
+    paths["html"].write_text(render_html(result, adaptations, meta, n, latest_backtest(out_dir)), encoding="utf-8")
     paths["md"].write_text(render_markdown(result, adaptations, meta, n), encoding="utf-8")
     serializable = {**result, "topics": [{**t, "examples": [p.to_dict() for p in t["examples"]]} for t in result["topics"]],
                     "adaptations": adaptations, "meta": meta}

@@ -13,12 +13,14 @@ import platform
 import subprocess
 import threading
 import webbrowser
+from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import pipeline, report
+from . import pipeline, report, sources
+from .models import scrub
 
 log = logging.getLogger("radar")
 
@@ -46,7 +48,7 @@ class Runner:
         try:
             pipeline.run(self.opts, self._progress)
             self.status.update(state="done", step=pipeline.STEPS + 1, message="")
-        except BaseException as e:  # classify() usa SystemExit para una clave de Jev inválida
+        except Exception as e:
             log.exception("Falló la actualización del radar")
             self.status.update(state="error", error=str(e) or e.__class__.__name__)
 
@@ -61,15 +63,51 @@ def page(out: Path, name: str | None, top: int) -> str:
         name = reports[0] if reports else None
     if name:
         data = json.loads((out / f"{name}.json").read_text(encoding="utf-8"))
-        html = report.render_html(data, data.get("adaptations", {}), data["meta"], len(data.get("adaptations", {})) or top)
+        html = report.render_html(data, data.get("adaptations", {}), data["meta"], len(data.get("adaptations", {})) or top,
+                                  report.latest_backtest(out))
     else:
         html = report.render_empty(top)
     app = json.dumps({"reports": reports, "current": name}).replace("<", "\\u003c")
     return html.replace("</head>", f"<script>window.RADAR_APP = {app};</script></head>", 1)
 
 
+PLATFORMS = {"linkedin", "instagram", "tiktok", "youtube", "x", "facebook", "threads", "otra"}
+
+
+def validate_contribution(body: dict, today: date | None = None) -> dict:
+    """Revisa un aporte de la comunidad. Lanza ValueError con un mensaje para mostrar en el formulario."""
+    today = today or date.today()
+    if body.get("public") is not True:
+        raise ValueError("Confirma que la publicación es pública y no incluye datos personales.")
+    url = str(body.get("url", "")).strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or "." not in parsed.hostname:
+        raise ValueError("El enlace debe ser una dirección web pública (https://…).")
+    text = scrub(str(body.get("text", "")))
+    if len(text) < 15:
+        raise ValueError("Pega el texto de la publicación (al menos una frase).")
+    try:
+        published = date.fromisoformat(str(body.get("published_at", ""))[:10])
+    except ValueError:
+        raise ValueError("Revisa la fecha de publicación.") from None
+    if not today - timedelta(days=60) <= published <= today:
+        raise ValueError("La fecha debe estar entre hoy y los últimos 60 días.")
+    platform_ = str(body.get("platform", "otra")).strip().lower()
+    counts = {}
+    for k in ("likes", "comments", "shares", "views"):
+        try:
+            counts[k] = max(0, int(float(body.get(k) or 0)))
+        except (TypeError, ValueError):
+            raise ValueError("Las métricas deben ser números.") from None
+    return {"platform": platform_ if platform_ in PLATFORMS else "otra", "url": url[:500], "text": text[:3000],
+            # Mediodía de Bogotá: la publicación cae en el día que eligió la persona.
+            "published_at": datetime(published.year, published.month, published.day, 12).isoformat() + "-05:00",
+            "publisher": str(body.get("publisher", "")).strip()[:80], **counts}
+
+
 def make_handler(runner: Runner):
     out = runner.opts.out
+    community = runner.opts.community
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status: int, body: str, ctype: str) -> None:
@@ -93,22 +131,41 @@ def make_handler(runner: Runner):
                 self._json(HTTPStatus.OK, runner.status)
             elif url.path == "/api/reports":
                 self._json(HTTPStatus.OK, {"reports": list_reports(out)})
+            elif url.path == "/api/community":
+                self._json(HTTPStatus.OK, {"count": sources.count_community(community)})
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "No existe"})
 
         def do_POST(self) -> None:
-            if urlparse(self.path).path != "/api/run":
+            path = urlparse(self.path).path
+            if path not in ("/api/run", "/api/community"):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "No existe"})
                 return
-            # Evita que otra página abierta en el navegador dispare el radar.
+            # Evita que otra página abierta en el navegador dispare el radar o escriba aportes.
             origin = self.headers.get("Origin")
             if origin and urlparse(origin).hostname not in ("localhost", "127.0.0.1"):
                 self._json(HTTPStatus.FORBIDDEN, {"error": "Origen no permitido"})
                 return
-            if runner.start():
+            if path == "/api/community":
+                self._contribute()
+            elif runner.start():
                 self._json(HTTPStatus.ACCEPTED, runner.status)
             else:
                 self._json(HTTPStatus.CONFLICT, {"error": "El radar ya se está actualizando"})
+
+        def _contribute(self) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= 20_000:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Aporte vacío o demasiado grande"})
+                return
+            try:
+                row = validate_contribution(json.loads(self.rfile.read(length)))
+            except (ValueError, AttributeError) as e:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(e) if isinstance(e, ValueError) else "Formato inválido"})
+                return
+            with runner.lock:
+                total = sources.append_community(community, row)
+            self._json(HTTPStatus.CREATED, {"count": total})
 
         def log_message(self, fmt: str, *args) -> None:  # sin una línea por cada consulta de estado
             pass

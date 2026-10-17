@@ -17,9 +17,10 @@ Prototipo desarrollado en el **Hackatón 30X** · Área **Media** · Reto: *Expl
 6. [Ejemplo de resultado](#ejemplo-de-resultado)
 7. [Stack tecnológico](#stack-tecnológico)
 8. [Instalación y uso](#instalación-y-uso)
-9. [Datos, privacidad y términos de servicio](#datos-privacidad-y-términos-de-servicio)
-10. [Alcance y limitaciones](#alcance-y-limitaciones)
-11. [Próximos pasos](#próximos-pasos)
+9. [¿Acierta el radar? (backtest)](#acierta-el-radar-backtest)
+10. [Datos, privacidad y términos de servicio](#datos-privacidad-y-términos-de-servicio)
+11. [Alcance y limitaciones](#alcance-y-limitaciones)
+12. [Próximos pasos](#próximos-pasos)
 
 ---
 
@@ -47,7 +48,7 @@ Por último, un modelo generativo redacta para cada tema el ángulo, tres gancho
 
 > Los modelos gratuitos de chat de Zen (`*-free`) solo funcionan dentro de la app OpenCode; desde un script la API responde `FreeTierError`. Por eso la redacción usa un modelo de pago barato. Jev sí está disponible gratis (`jev-1.13-free`) por tiempo limitado.
 
-**Costo:** Jev cobra US$0,042 por millón de tokens de entrada. Una corrida típica de unas 3.000 piezas cuesta alrededor de US$0,10, y las piezas ya clasificadas quedan en caché.
+**Costo:** Jev cobra US$0,042 por millón de tokens de entrada. Una corrida de unas 3.000 piezas se estima en unos US$0,10 (por confirmar en la primera corrida con saldo: la app muestra el costo real de cada actualización), y las piezas ya clasificadas quedan en caché, así que cada semana solo se pagan las nuevas. Frente a los miles de dólares al año de un servicio de scraping, el costo de operación es de centavos por semana.
 
 ## Pregunta que responde el prototipo
 
@@ -56,7 +57,7 @@ Por último, un modelo generativo redacta para cada tema el ángulo, tres gancho
 ## Cómo funciona
 
 ```
-Bluesky · Hacker News · YouTube RSS · Google News RSS · CSV de comunidad
+Bluesky · Hacker News · YouTube (API o RSS) · Google News RSS · aportes de la comunidad
                                 │  (muestra comparable por día)
                                 ▼
                  Limpieza de datos personales (hash de autores)
@@ -93,7 +94,11 @@ Toda la aritmética vive en código, como recomienda TypeSafe: el modelo solo to
 - ✅ App web local: tablero con mapa de oportunidades, ranking, feed de publicaciones destacadas, historial y botón para actualizar
 - ✅ Feed vertical estilo TikTok con las publicaciones que más rindieron frente a su plataforma: pestañas Para ti / Útiles / Recientes / Guardados, filtros por plataforma y tema, doble clic para guardar y botón para saltar a la adaptación del tema
 - ✅ Reporte HTML / Markdown / JSON
-- ✅ Entrada de comunidad por CSV para LinkedIn, Instagram y TikTok
+- ✅ Botón **Aportar** en la app: el equipo agrega publicaciones públicas de LinkedIn, Instagram o TikTok (con limpieza de datos personales y confirmación de que son públicas); también se puede usar el CSV
+- ✅ **Backtest** (`python -m radar.backtest`): corre el radar en semanas pasadas sin ver el futuro y mide si acertó; el resultado aparece en la app como «¿Acierta el radar?»
+- ✅ YouTube por la **API oficial** (opcional, `YOUTUBE_API_KEY`): búsqueda diaria comparable, así YouTube entra al cálculo de crecimiento
+- ✅ Si Jev no responde (clave sin saldo, límite de gasto), el radar lo detecta en segundos y usa el clasificador local, sin dejar un reporte vacío
+- ✅ Costo de cada actualización visible en «Cómo se calcula»
 
 ## Ejemplo de resultado
 
@@ -166,6 +171,7 @@ Para ajustar la audiencia, la taxonomía, las consultas, los canales de YouTube 
 | `RADAR_ZEN_MODEL` | Modelo de Zen para redactar (por defecto `glm-5.3-flash`). |
 | `RADAR_HASH_SALT` | Sal para el hash de autores. |
 | `RADAR_JEV_MODEL` | Modelo de Jev (por defecto `jev-latest`). |
+| `YOUTUBE_API_KEY` | Opcional. YouTube Data API v3: búsqueda diaria de videos de IA, con lo que YouTube entra al cálculo de crecimiento. Sin ella se usa el RSS de 10 canales. |
 
 > **Nunca subas claves reales al repositorio.** `.env` ya está en `.gitignore`.
 
@@ -186,6 +192,28 @@ linkedin,https://www.linkedin.com/posts/...,"Texto del post",2026-10-15T10:00:00
 
 `publisher` solo se llena con organizaciones (medios, marcas), nunca con nombres de personas.
 
+En la app, el botón **Aportar** hace lo mismo sin editar archivos: valida el enlace y la fecha, pide confirmar que la publicación es pública, borra menciones, correos y teléfonos, y la guarda en `data/comunidad.csv`, que el radar usa en cada actualización.
+
+## ¿Acierta el radar? (backtest)
+
+```bash
+.venv/bin/python -m radar.backtest --weeks 3
+```
+
+Para cada una de las últimas semanas se corre el radar "como si fuera ese día", sin ver nada posterior, y se mide la semana siguiente. Un tema "siguió arriba" si su participación en la conversación la semana siguiente fue mayor que en sus dos semanas previas. Se compara con la alternativa obvia: seguir los temas de los que más se habla.
+
+Corrida real del 17-10-2026 (3 semanas, 6.385 publicaciones, clasificador local):
+
+| Métrica | Radar | Temas más populares | Cualquier tema |
+|---|---|---|---|
+| Temas del top 10 que siguieron por encima de lo normal | **80 %** | 67 % | 69 % |
+| Participación la semana siguiente vs. su línea base | **1,08×** | 1,02× | |
+
+- Temas marcados como *nacientes* o *en crecimiento* que siguieron arriba: **88 %** (7 de 8).
+- Temas marcados *en declive* que siguieron abajo: 67 % (2 de 3).
+
+Son pocas semanas y pocos casos: es evidencia direccional, no una prueba estadística definitiva. El detalle por semana y por tema queda en `out/backtest-AAAA-MM-DD.md`.
+
 ## Datos, privacidad y términos de servicio
 
 - **Solo contenido público.** Todas las fuentes son APIs abiertas o feeds RSS oficiales; no se accede a nada detrás de un login.
@@ -194,20 +222,21 @@ linkedin,https://www.linkedin.com/posts/...,"Texto del post",2026-10-15T10:00:00
 
 ## Alcance y limitaciones
 
-- **Plataformas integradas:** Bluesky, Hacker News, YouTube (canales de referencia), Google News y un CSV de comunidad.
-- **En el diseño, pero sin integración automática:** LinkedIn, Instagram y TikTok. No tienen una API pública de descubrimiento, así que hoy entran por el CSV de comunidad.
-- **YouTube** no entra en el cálculo de crecimiento: su RSS solo trae los últimos 15 videos por canal, lo que fabricaría "crecimiento". Sí se usa para explicar y dar ejemplos.
+- **Plataformas integradas y probadas:** Bluesky, Hacker News, Google News y YouTube por RSS (10 canales).
+- **YouTube por API:** implementado y probado con respuestas simuladas; falta la primera corrida con una clave real. Sin clave, YouTube no entra en el cálculo de crecimiento (su RSS solo trae los últimos 15 videos por canal) y se usa para explicar y dar ejemplos.
+- **LinkedIn, Instagram y TikTok:** no tienen una API pública de descubrimiento sin login, así que entran solo por los aportes de la comunidad (botón Aportar o CSV). No hay integración automática y no la prometemos.
 - **Muestra, no censo:** la tendencia se mide sobre las piezas con más interacción de cada día, no sobre todo lo publicado.
 - **Idioma:** Jev rinde mejor en inglés; las preguntas están en inglés y las piezas en español o inglés. Conviene validar con una muestra etiquetada por el equipo.
-- **Ruta de Jev sin probar con clave real** (la demo puede correr con el modelo local): el formato de la petición se validó contra la API (que respondió 401 por la clave de prueba), pero en este entorno no había una clave válida. La primera corrida con `TYPESAFE_API_KEY` es la prueba real.
+- **Jev vía OpenRouter:** la conexión y la autenticación funcionan (OpenRouter aceptó la clave), pero la clave de prueba tiene un límite de gasto de US$0 y rechazó las llamadas. La primera corrida con saldo es la prueba completa; mientras tanto, los números de esta página salen del clasificador local.
 - Las explicaciones del "por qué funcionó" son **hipótesis** basadas en correlación, no causalidad demostrada. Conviene validarlas con el criterio editorial del equipo.
 
 ## Próximos pasos
 
 - [ ] Calibrar el filtro de audiencia con 50–100 piezas etiquetadas por el equipo de 30X
-- [ ] Bot de Slack o WhatsApp para que la comunidad reporte piezas (sensor comunitario)
-- [ ] YouTube Data API (oficial) para tener historial y medir crecimiento en YouTube
-- [ ] Validar la detección temprana con datos históricos: ¿los temas "nacientes" crecieron después?
+- [x] Formulario en la app para que el equipo aporte piezas (sensor comunitario)
+- [ ] Bot de Slack o WhatsApp que escriba en el mismo CSV de aportes
+- [x] YouTube Data API (oficial) para medir crecimiento en YouTube — falta probar con clave real
+- [x] Validar la detección temprana con datos históricos (backtest) — repetir con Jev y más semanas
 - [ ] Programar la corrida semanal y publicar el reporte automáticamente
 
 ---

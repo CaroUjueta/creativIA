@@ -5,7 +5,7 @@
 
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from radar import analysis, config, sources
@@ -99,6 +99,108 @@ class TestCommunityCSV(unittest.TestCase):
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0].platform, "linkedin")
         self.assertEqual(posts[0].likes, 120)
+
+
+class TestContributions(unittest.TestCase):
+    BODY = {"url": "https://www.linkedin.com/posts/x", "platform": "LinkedIn", "published_at": "2026-10-15",
+            "text": "Cómo usamos agentes de IA en ventas. Escríbeme a ana@correo.com", "likes": "120", "public": True}
+
+    def test_valid_contribution_is_scrubbed_and_saved(self):
+        from radar import web
+        row = web.validate_contribution(self.BODY, today=date(2026, 10, 17))
+        self.assertEqual(row["platform"], "linkedin")
+        self.assertNotIn("ana@correo.com", row["text"])
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "comunidad.csv"
+            self.assertEqual(sources.append_community(path, row), 1)
+            self.assertEqual(sources.append_community(path, row), 2)
+            posts = sources.community_csv(path, START, END)
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(posts[0].created_at.date(), date(2026, 10, 15))
+
+    def test_rejects_private_or_invalid_contributions(self):
+        from radar import web
+        for change in ({"public": False}, {"url": "file:///etc/passwd"}, {"text": "corto"},
+                       {"published_at": "2025-01-01"}, {"likes": "muchos"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                web.validate_contribution({**self.BODY, **change}, today=date(2026, 10, 17))
+
+
+class TestYouTubeAPI(unittest.TestCase):
+    def test_collects_daily_videos_with_stats_and_no_channel_name(self):
+        import asyncio
+        import os
+        from unittest import mock
+
+        import httpx
+
+        seen_keys = []
+
+        def handler(req):
+            seen_keys.append(req.headers.get("x-goog-api-key"))
+            self.assertNotIn("key=", str(req.url))  # la clave nunca va en la URL
+            if req.url.path.endswith("/search"):
+                return httpx.Response(200, json={"items": [{"id": {"videoId": "abc123def45"}, "snippet": {
+                    "publishedAt": "2026-10-16T15:00:00Z", "channelId": "UCx", "channelTitle": "Ana Pérez",
+                    "title": "Agentes de IA para empresas", "description": "Demo"}}]})
+            return httpx.Response(200, json={"items": [{"id": "abc123def45", "statistics": {
+                "viewCount": "5000", "likeCount": "300", "commentCount": "12"}}]})
+
+        async def run():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                return await sources.youtube_api(client, END - timedelta(days=2), END, 10)
+
+        with mock.patch.dict(os.environ, {"YOUTUBE_API_KEY": "k"}):
+            self.assertEqual(sources.youtube_mode(), "api")
+            posts = asyncio.run(run())
+        self.assertEqual(len(posts), 1)  # el mismo video en varias búsquedas cuenta una vez
+        self.assertEqual((posts[0].views, posts[0].likes, posts[0].comments), (5000, 300, 12))
+        self.assertEqual(posts[0].publisher, "")
+        self.assertNotIn("Ana", posts[0].text)
+        self.assertEqual(set(seen_keys), {"k"})
+
+
+class TestJevFallback(unittest.TestCase):
+    def test_falls_back_when_jev_is_unavailable(self):
+        import os
+        from unittest import mock
+
+        from radar import classify
+
+        async def broken(posts, concurrency):
+            raise classify.JevUnavailable("403 Key limit exceeded")
+
+        posts = [Post(id=f"fallback-test-{i}", platform="bluesky", url="", text="Los agentes de IA llegan a las empresas",
+                      created_at=END, author_hash="a") for i in range(3)]
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "test"}), \
+             mock.patch.object(classify, "_classify_jev", broken), \
+             mock.patch.object(classify, "_load_cache", lambda: {}), \
+             mock.patch.object(classify, "local_available", lambda: False):
+            stats = classify.classify(posts, use_jev=True)
+        self.assertEqual(stats["classifier"], "heuristico")
+        self.assertIn("Key limit", stats["jev_error"])
+        self.assertTrue(all(p.labels for p in posts))
+
+
+class TestBacktest(unittest.TestCase):
+    def test_rising_topic_is_predicted_and_holds(self):
+        from radar import backtest
+        # 28 días: 'agentes_ia' empieza a subir 7 días antes del corte y sigue arriba después.
+        end, posts, i = END, [], 0
+        for day in range(28):
+            ts = end - timedelta(days=28 - day, hours=-12)
+            for topic, n in (("agentes_ia", 5 if day >= 14 else 1), ("nuevos_modelos", 10), ("ia_y_sociedad", 4)):
+                for _ in range(n):
+                    i += 1
+                    posts.append(Post(id=str(i), platform="bluesky", url="", text=f"post {i}", created_at=ts,
+                                      author_hash=f"a{i}", likes=i % 7, labels=labels(topic)))
+        bt = backtest.evaluate(posts, end, weeks=1, top=1)
+        fold = bt["folds"][0]
+        self.assertEqual(fold["radar_top"], ["agentes_ia"])
+        self.assertEqual(fold["radar_hit"], 1.0)
+        self.assertEqual(fold["popular_top"], ["nuevos_modelos"])
+        self.assertEqual(bt["summary"]["weeks"], 1)
+        self.assertIn("¿Siguió arriba?", backtest.render_markdown(bt, {"classifier": "test", "generated": "x"}))
 
 
 class TestZenAdapter(unittest.TestCase):

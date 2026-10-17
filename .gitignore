@@ -3,3 +3,4 @@ __pycache__/
 .env
 out/
 data/cache/
+data/comunidad.csv

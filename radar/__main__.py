@@ -21,7 +21,7 @@ def main() -> None:
     ap.add_argument("--top", type=int, default=10, help="cuántos temas incluir en el reporte")
     ap.add_argument("--per-day", type=int, default=25, help="piezas por día y consulta en cada fuente")
     ap.add_argument("--platforms", default=",".join(pipeline.ALL_PLATFORMS), help="fuentes separadas por coma")
-    ap.add_argument("--community", type=Path, help="CSV con piezas públicas aportadas por la comunidad")
+    ap.add_argument("--community", type=Path, default=pipeline.COMMUNITY_CSV, help="CSV con piezas públicas aportadas por la comunidad")
     ap.add_argument("--out", type=Path, default=Path("out"), help="carpeta de salida")
     ap.add_argument("--no-jev", action="store_true", help="no usar Jev aunque haya clave")
     ap.add_argument("--no-local", action="store_true", help="sin Jev, usar palabras clave en vez del modelo local")
