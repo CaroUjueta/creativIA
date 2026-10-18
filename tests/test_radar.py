@@ -170,9 +170,13 @@ class TestYouTubeAPI(unittest.TestCase):
             if req.url.path.endswith("/search"):
                 return httpx.Response(200, json={"items": [{"id": {"videoId": "abc123def45"}, "snippet": {
                     "publishedAt": "2026-10-16T15:00:00Z", "channelId": "UCx", "channelTitle": "Ana Pérez",
-                    "title": "Agentes de IA para empresas", "description": "Demo"}}]})
-            return httpx.Response(200, json={"items": [{"id": "abc123def45", "statistics": {
-                "viewCount": "5000", "likeCount": "300", "commentCount": "12"}}]})
+                    "title": "Agentes de IA para empresas", "description": "Demo"}},
+                    {"id": {"videoId": "ptvideo0001"}, "snippet": {"publishedAt": "2026-10-16T16:00:00Z",
+                     "channelId": "UCy", "title": "Engenharia reversa por IA", "description": ""}}]})
+            return httpx.Response(200, json={"items": [
+                {"id": "abc123def45", "snippet": {"defaultAudioLanguage": "es-419"},
+                 "statistics": {"viewCount": "5000", "likeCount": "300", "commentCount": "12"}},
+                {"id": "ptvideo0001", "snippet": {"defaultAudioLanguage": "pt-BR"}, "statistics": {"viewCount": "9000"}}]})
 
         async def run():
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -181,7 +185,8 @@ class TestYouTubeAPI(unittest.TestCase):
         with mock.patch.dict(os.environ, {"YOUTUBE_API_KEY": "k"}):
             self.assertEqual(sources.youtube_mode(), "api")
             posts = asyncio.run(run())
-        self.assertEqual(len(posts), 1)  # el mismo video en varias búsquedas cuenta una vez
+        self.assertEqual(len(posts), 1)  # una vez por video; el de portugués se descarta
+        self.assertEqual(posts[0].lang, "es")
         self.assertEqual((posts[0].views, posts[0].likes, posts[0].comments), (5000, 300, 12))
         self.assertEqual(posts[0].publisher, "")
         self.assertNotIn("Ana", posts[0].text)
@@ -367,8 +372,8 @@ class TestEvaluationFixes(unittest.TestCase):
         self.assertEqual(classify._classify_heuristic(p)["hook"], "sin_gancho")
 
     def test_checker_ignores_durations(self):
-        from radar import evaluate
-        self.assertEqual(evaluate.DURATION.sub(" ", "Video de 60 segundos, carrusel de 6–8 láminas").count("60"), 0)
+        from radar import adapt
+        self.assertEqual(adapt.DURATION.sub(" ", "Video de 60 segundos, carrusel de 6–8 láminas").count("60"), 0)
 
 
 class TestPublicMode(unittest.TestCase):
@@ -437,3 +442,98 @@ class TestEvaluationRound2(unittest.TestCase):
     def test_news_about_deepfakes_is_kept(self):
         self.assertFalse(sources.ADULT.search("Eurodiputadas víctimas de pornografía falsa hecha con IA"))
         self.assertFalse(sources.ADULT.search("XXX Congreso Hispanoamericano de la Prensa"))
+
+
+class TestEvaluationRound3(unittest.TestCase):
+    ITEM = {"topic_id": "agentes_ia", "por_que_funciona": "x", "ganchos": ["a", "b", "c"], "cuidado": "z",
+            "formatos": {"linkedin": "1", "instagram": "2", "tiktok": "3", "youtube": "4"}}
+
+    def test_review_flags_invented_cases_english_and_swipe_in_reels(self):
+        from radar import adapt
+        topic = {"growth": 1.5, "examples": [], "why": {}}
+        item = {**self.ITEM, "angulo": "Tres casos reales de Chile. Una pyme de México redujo costos. Última hora: un informe reciente.",
+                "para_cuenta": {"formato": "reel a cámara de 40 s", "caption": "Desliza y swipe"}}
+        issues = " · ".join(adapt.review(item, topic))
+        for expected in ("casos reales", "pyme de México", "Última hora", "informe reciente", "swipe", "desliza"):
+            self.assertIn(expected, issues)
+        labeled = {**self.ITEM, "angulo": "x", "ganchos": ["Así empieza una noticia: la IA llegó"]}
+        self.assertIn("Así empieza", " ".join(adapt.review(labeled, topic)))
+        self.assertEqual(adapt.review({**self.ITEM, "angulo": "Qué cambia para tu equipo"}, topic), [])
+
+    def test_claim_in_the_examples_is_backed(self):
+        from radar import adapt
+        topic = {"growth": 1.0, "examples": [{"text": "Última hora: OpenAI lanza agentes"}], "why": {}}
+        self.assertEqual(adapt.review({**self.ITEM, "angulo": "Última hora: OpenAI lanza agentes"}, topic), [])
+
+    def test_flagged_recommendation_gets_a_second_pass(self):
+        from unittest import mock
+
+        from radar import adapt
+        topics = [{"id": "agentes_ia", "growth": 1.0, "examples": [], "why": {}}]
+        bad = {**self.ITEM, "angulo": "Según un estudio reciente, todo cambió"}
+        good = {**self.ITEM, "angulo": "Una idea por verificar: qué cambia para tu equipo"}
+        with mock.patch.object(adapt, "_openrouter_batch", return_value=({"agentes_ia": good}, "m")) as call:
+            out = adapt._fix_batch(topics, {"agentes_ia": bad}, "sistema", None)
+        self.assertIn("problemas", call.call_args.args[3]["agentes_ia"])
+        self.assertEqual(out["agentes_ia"]["angulo"], good["angulo"])
+        self.assertEqual(out["agentes_ia"]["revisar"], [])
+
+    def test_softmax_head_learns_and_reviewed_pieces_are_held_out(self):
+        import numpy as np
+
+        from radar import entrenar
+        rng = np.random.default_rng(0)
+        X = np.vstack([rng.normal(c, 0.1, (30, 4)) for c in (-1, 0, 1)])
+        y = np.repeat([0, 1, 2], 30)
+        self.assertGreater((entrenar.predict(entrenar.fit_softmax(X, y, 3), X).argmax(1) == y).mean(), 0.95)
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "evaluacion-x").mkdir()
+            (Path(d) / "evaluacion-x" / "etiquetado.csv").write_text("id,tema\nbsky:1,agentes_ia\n", encoding="utf-8")
+            self.assertIn("bsky:1", entrenar.held_out(Path(d)))
+
+    def test_degenerate_teacher_batch_is_rejected(self):
+        from radar import entrenar
+        lazy = [{"t": "otro_ia", "g": "sin_gancho"}] * 100
+        varied = [{"t": t, "g": "sin_gancho"} for t in list(config.TOPICS) * 6][:100]
+        self.assertTrue(entrenar.degenerate(lazy))
+        self.assertFalse(entrenar.degenerate(varied))
+
+    def test_local_classifier_uses_trained_heads(self):
+        from unittest import mock
+
+        import numpy as np
+
+        from radar import classify, entrenar
+        dim = 4
+        posts = [Post(id="1", platform="bluesky", url="", text="IA en la empresa", created_at=END, author_hash="a")]
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "modelo.npz"
+            heads = {h: np.zeros((dim + 1, len(opts))) for h, (_, opts) in entrenar.HEADS.items()}
+            heads["topic"][-1, list(config.TOPICS).index("adopcion_empresarial")] = 5  # sesgo hacia un tema
+            heads["hook"][-1, list(config.HOOKS).index("opinion")] = 5
+            np.savez(path, embed_model=classify.LOCAL_MODEL, n=1, **{f"W_{h}": w for h, w in heads.items()},
+                     **{f"opts_{h}": np.array([str(o) for o in opts]) for h, (_, opts) in entrenar.HEADS.items()})
+            fake = lambda texts: np.ones((len(texts), dim)) / 2
+            with mock.patch.object(classify, "TRAINED", path), mock.patch.object(classify, "local_embedder", return_value=fake):
+                classify._classify_local(posts)
+        self.assertTrue(posts[0].labels["trained"])
+        self.assertEqual(posts[0].labels["topic"], "adopcion_empresarial")
+        self.assertEqual(posts[0].labels["hook"], "opinion")
+        self.assertEqual(posts[0].labels["topic_probs"]["adopcion_empresarial"], 1.0)  # se cuenta por tema ganador
+        self.assertEqual(sum(posts[0].labels["topic_probs"].values()), 1.0)
+        self.assertAlmostEqual(posts[0].labels["audience_fit"], 0.5)  # relevancia esperada 1,5 de 3
+
+    def test_filled_sheets_are_archived_not_overwritten(self):
+        from unittest import mock
+
+        from radar import evaluate
+        with tempfile.TemporaryDirectory() as d:
+            sheets = Path(d) / "evaluacion"
+            sheets.mkdir()
+            (sheets / "etiquetado.csv").write_text("id,tema\n1,agentes_ia\n", encoding="utf-8")
+            with mock.patch.object(evaluate, "SHEETS", sheets):
+                evaluate._archive_filled()
+            archived = [p for p in Path(d).iterdir() if p.name.startswith("evaluacion-")]
+            self.assertEqual(len(archived), 1)
+            self.assertTrue((archived[0] / "etiquetado.csv").exists())
+            self.assertEqual(list(sheets.iterdir()), [])

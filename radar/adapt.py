@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import date
 
 from . import analysis, config
@@ -47,7 +48,7 @@ def _strong(rows: list[dict], n: int = 3) -> list[dict]:
     return [r for r in rows if r["n"] >= analysis.MIN_SIGNAL][:n]
 
 
-def _evidence(topics: list[dict]) -> list[dict]:
+def _evidence(topics: list[dict], fixes: dict[str, dict] | None = None) -> list[dict]:
     out = []
     for t in topics:
         w = t["why"]
@@ -66,6 +67,8 @@ def _evidence(topics: list[dict]) -> list[dict]:
             "mejores_franjas": _strong(w["timing"], 2),
             "idiomas": w["lang_share"],
             "ejemplos": [{"plataforma": p.platform, "texto": p.text[:300]} for p in t["examples"][:3]],
+            # En la segunda pasada, el borrador anterior y lo que hay que corregir.
+            **({"corregir": fixes[t["id"]]} if fixes and t["id"] in fixes else {}),
         })
     return out
 
@@ -126,6 +129,12 @@ en vigor, empresas, productos ni citas: usa solo los datos y ejemplos que recibe
 como hecho algo que no está en los ejemplos ("acaba de salir", "un estudio reciente muestra", "los chips
 están escaseando"). Si un gancho necesita un dato que no tienes, escribe [dato por verificar] en su lugar.
 Cuando el ángulo proponga algo que no está en la evidencia, plantéalo como idea o pregunta, no como hecho.
+No inventes casos de empresas, personas ni países ("una pyme de México redujo…", "tres casos reales"):
+si conviene un caso, di que hay que buscarlo ("busca un caso de una empresa de la región que…").
+Los formatos deben salir del tema y de sus ejemplos: no repitas la misma recomendación de formato en dos
+temas. En reels y videos no digas "desliza"; eso es solo para carruseles.
+Cada gancho es la primera línea tal como se publicaría: no describas el tipo de gancho ("Así empieza una
+noticia: …", "Así comienza una reflexión: …").
 Escribe todo en español neutro: tutea (tú, no vos ni usted), sin palabras en inglés cuando hay una en
 español (carrusel, no carousel; implementar, no deployar) y nunca copies identificadores internos con
 guiones bajos. Cuida los datos culturales (fiestas, leyes y costumbres de cada país)."""
@@ -141,9 +150,68 @@ Además, para cada tema escribe para_cuenta: la pieza concreta para la cuenta de
 """
 
 
+FIX_RULES = """
+Algunos temas traen "corregir": tu borrador anterior y los problemas que encontró la revisión. Reescribe
+esos temas completos sin esos problemas: quita la afirmación o plantéala como idea por verificar."""
+
+
 def system_prompt(account_ctx: str = "") -> str:
     today = f"\nHoy es {date.today().isoformat()}: no escribas años pasados como si fueran actuales."
     return SYSTEM + today + (ACCOUNT_RULES + "\n" + account_ctx if account_ctx else "")
+
+
+# --- Revisión de lo redactado -------------------------------------------------------------------
+# El modelo a veces presenta como hecho lo que no está en la evidencia. Esto se revisa en código:
+# cifras que no salen de los datos, casos o estudios inventados, palabras en inglés y "desliza" en video.
+
+NUM = re.compile(r"\d+(?:[.,]\d+)?\s*%?")
+DURATION = re.compile(r"[<>~]?\d+(?:\s*[-–]\s*\d+)?\s*(?:seg\w*|s\b|min\w*|láminas?|slides?|pasos?|horas?|palabras|días?)", re.I)
+CLAIMS = re.compile(
+    r"\b(?:casos? reales?"
+    r"|(?:un|una|el|la) (?:nuevo |nueva )?(?:estudio|informe|reporte|encuesta|investigación) (?:reciente|nuev[oa]|de \w+)"
+    r"|según (?:un|una) (?:estudio|informe|reporte|encuesta)"
+    r"|última hora|acaba(?:n)? de (?:salir|publicar|anunciar|lanzar)"
+    r"|(?:una|un) (?:pyme|empresa|startup|compañía|banco|retailer) (?:de|en) [A-ZÁÉÍÓÚ]\w+ (?:\w+ )?(?:redujo|aumentó|logró|ahorró|consiguió|duplicó|triplicó|recortó))",
+    re.I)
+ENGLISH = re.compile(r"\b(?:swipe|saved?|disruption|overlooking|carousel|deploy\w*|trending|realities|adopts?|insights?|mindset|outperform\w*|redesign|relevance|the|and|your)\b", re.I)
+VIDEO_SWIPE = re.compile(r"\bdesliza", re.I)
+HOOK_LABEL = re.compile(r"^\s*Así (?:empieza|comienza|arranca)\b", re.I)
+
+
+def _texts(examples) -> str:
+    return " ".join(e.text if hasattr(e, "text") else e.get("text", "") for e in examples)
+
+
+def invented_numbers(item: dict, topic: dict) -> list[str]:
+    """Cifras del texto que no salen de lo calculado por el radar ni de los ejemplos."""
+    allowed = {f"{(topic.get('growth', 1) - 1) * 100:.0f}"} | set(re.findall(r"\d+", _texts(topic.get("examples", []))))
+    allowed |= {str(x) for x in range(0, 11)}  # "3 formas", "5 pasos": cantidades del formato, no datos
+    allowed |= {re.sub(r"\D", "", str(r.get(k, ""))) for rows in topic.get("why", {}).values() if isinstance(rows, list)
+                for r in rows if isinstance(r, dict) for k in ("lift", "n")}
+    # Duraciones y cantidades de láminas son parte del formato, no datos.
+    text = DURATION.sub(" ", json.dumps(item, ensure_ascii=False))
+    out = []
+    for m in NUM.findall(text):
+        digits = re.sub(r"\D", "", m.split(",")[0].split(".")[0])
+        if digits and digits not in allowed and re.sub(r"\D", "", m) not in allowed:
+            out.append(m.strip())
+    return out
+
+
+def review(item: dict, topic: dict) -> list[str]:
+    """Problemas de una recomendación que hay que corregir antes de publicarla."""
+    text = json.dumps({k: v for k, v in item.items() if k != "revisar"}, ensure_ascii=False)
+    examples = _texts(topic.get("examples", []))
+    issues = [f"cifra sin respaldo: «{n}»" for n in invented_numbers(item, topic)]
+    # Una afirmación que ya está en los ejemplos sí tiene respaldo.
+    issues += [f"afirmación sin respaldo: «{m}»" for m in dict.fromkeys(CLAIMS.findall(text)) if m.lower() not in examples.lower()]
+    issues += [f"palabra en inglés: «{m}»" for m in dict.fromkeys(w.lower() for w in ENGLISH.findall(text))]
+    if any(HOOK_LABEL.search(h) for h in item.get("ganchos", []) if isinstance(h, str)):
+        issues.append("un gancho describe su tipo («Así empieza…») en vez de ser la primera línea")
+    pc = item.get("para_cuenta") or {}
+    if re.search(r"reel|video", str(pc.get("formato", "")), re.I) and VIDEO_SWIPE.search(json.dumps(pc, ensure_ascii=False)):
+        issues.append("«desliza» en un reel: es una indicación de carrusel")
+    return issues
 
 
 def _with_claude(topics: list[dict], system: str) -> dict[str, dict]:
@@ -269,15 +337,15 @@ def _valid(item: dict, with_account: bool = False) -> bool:
 
 
 def _with_chat(topics: list[dict], url: str, api_key: str, model: str, name: str, extra: dict | None = None,
-               system: str = SYSTEM, account: dict | None = None) -> dict[str, dict]:
+               system: str = SYSTEM, account: dict | None = None, fixes: dict[str, dict] | None = None) -> dict[str, dict]:
     """Redacción con un modelo vía una API compatible con OpenAI (OpenRouter u OpenCode Zen)."""
     import httpx
 
     body = {
         "model": model,
         "messages": [
-            {"role": "system", "content": system + "\n" + ZEN_FORMAT + (ZEN_ACCOUNT if account else "")},
-            {"role": "user", "content": json.dumps(_evidence(topics), ensure_ascii=False)},
+            {"role": "system", "content": system + "\n" + ZEN_FORMAT + (ZEN_ACCOUNT if account else "") + (FIX_RULES if fixes else "")},
+            {"role": "user", "content": json.dumps(_evidence(topics, fixes), ensure_ascii=False)},
         ],
         "response_format": {"type": "json_object"},
         **(extra or {}),
@@ -321,28 +389,48 @@ BATCH = 5  # temas por llamada: con muchos, el modelo gratuito se queda sin toke
 
 def _with_openrouter(topics: list[dict], system: str, account: dict | None) -> tuple[dict[str, dict], str]:
     """Redacta por lotes; un lote que ningún modelo logra redactar queda con plantillas."""
-    out, used = {}, []
+    out, used, templated = {}, [], 0
     for i in range(0, len(topics), BATCH):
         part = topics[i:i + BATCH]
         try:
             items, model = _openrouter_batch(part, system, account)
             used.append(model)
+            items = _fix_batch(part, items, system, account)
         except RuntimeError as e:
             log.warning("Lote %d sin redactar (%s); se usan plantillas.", i // BATCH + 1, e)
             items = _with_templates(part, account)
+            templated += len(part)
         out.update(items)
     if not used:
         raise RuntimeError(f"ningún modelo respondió ({', '.join(OPENROUTER_MODELS)})")
-    return out, ", ".join(dict.fromkeys(used))
+    return out, ", ".join(dict.fromkeys(used)) + (f"; {templated} temas con plantillas" if templated else "")
 
 
-def _openrouter_batch(topics: list[dict], system: str, account: dict | None) -> tuple[dict[str, dict], str]:
+def _fix_batch(topics: list[dict], items: dict[str, dict], system: str, account: dict | None) -> dict[str, dict]:
+    """Una segunda pasada solo para los temas con problemas; lo que siga mal queda marcado en "revisar"."""
+    fixes = {t["id"]: {"borrador": items[t["id"]], "problemas": issues} for t in topics
+             if t["id"] in items and (issues := review(items[t["id"]], t))}
+    if fixes:
+        log.info("Corrigiendo %d recomendaciones con problemas…", len(fixes))
+        try:
+            fixed, _ = _openrouter_batch([t for t in topics if t["id"] in fixes], system, account, fixes)
+            items.update({k: v for k, v in fixed.items() if k in fixes})
+        except RuntimeError as e:
+            log.warning("No se pudo corregir (%s); quedan marcadas para revisar.", e)
+    for t in topics:
+        if t["id"] in items:
+            items[t["id"]]["revisar"] = review(items[t["id"]], t)
+    return items
+
+
+def _openrouter_batch(topics: list[dict], system: str, account: dict | None,
+                      fixes: dict[str, dict] | None = None) -> tuple[dict[str, dict], str]:
     errors = []
     for model in OPENROUTER_MODELS:
         try:
             # Esfuerzo de razonamiento bajo: es redacción, no un problema difícil, y así responde rápido.
             out = _with_chat(topics, OPENROUTER_URL, os.environ["OPENROUTER_API_KEY"], model, model,
-                             {"reasoning": {"effort": "low"}, "max_tokens": 16000}, system, account)
+                             {"reasoning": {"effort": "low"}, "max_tokens": 16000}, system, account, fixes)
             return out, model
         except Exception as e:
             log.warning("OpenRouter no pudo redactar con %s (%s).", model, str(e)[:160])

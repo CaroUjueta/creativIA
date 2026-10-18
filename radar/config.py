@@ -57,13 +57,13 @@ TOPIC_NAMES: dict[str, str] = {
 HOOKS: dict[str, str] = {
     "pregunta": "Abre con una pregunta al lector",
     "dato_sorprendente": "Abre con un dato, cifra o estadística sorprendente",
-    "noticia_urgente": "Abre con una noticia o anuncio reciente ('acaba de salir', 'última hora')",
-    "contraintuitivo": "Abre con una afirmación polémica o contraintuitiva que rompe una creencia",
+    "noticia_urgente": "Subraya que algo acaba de pasar ('acaba de salir', 'última hora', 'ya está disponible'); un titular de noticia sin esa urgencia es sin_gancho",
+    "contraintuitivo": "Contradice lo que la mayoría cree o espera ('el problema no es la IA', 'nadie te dice que…'); si solo expresa una postura, es opinion",
     "lista_o_guia": "Promete una lista, guía, pasos o recursos ('5 herramientas', 'cómo hacer')",
     "historia_personal": "Abre con una historia o experiencia personal",
     "advertencia": "Abre con una advertencia, error común o miedo ('deja de hacer esto')",
-    "opinion": "Abre directamente con una opinión o reflexión del autor",
-    "sin_gancho": "No tiene un gancho claro; empieza de forma plana o descriptiva",
+    "opinion": "Abre directamente con una opinión, postura o queja del autor",
+    "sin_gancho": "No tiene un gancho claro; empieza de forma plana o descriptiva, como un titular informativo",
 }
 
 FORMATS: dict[str, str] = {

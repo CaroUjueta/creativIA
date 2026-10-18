@@ -1035,6 +1035,7 @@ function openTopic(id) {
             const cls = !FMT_KEY[net] ? "" : k === FMT_KEY[net] ? "on" : "dim";
             return `<div class="fmt ${cls}"><i style="background:${PCOLOR[name] || "#999"}"></i><b>${esc(name)}</b><span>${esc(v)}</span></div>`; }).join("")}</div>
           ${a.cuidado ? `<div class="careful">${esc(a.cuidado)}</div>` : ""}
+          ${a.revisar?.length ? `<div class="careful"><b>Revisar antes de publicar:</b> ${a.revisar.map(esc).join(" · ")}</div>` : ""}
         </div>
         <div class="ppanel" data-p="why" hidden>
           <p class="lead">${esc(a.por_que_funciona)}</p>
@@ -1256,6 +1257,7 @@ def render_markdown(result: dict, adaptations: dict, meta: dict, n: int = 10) ->
             *[f"  - Gancho: {h}" for h in a.get("ganchos", [])],
             *[f"  - {PLATFORM_LABEL.get(k, k)}: {v}" for k, v in a.get("formatos", {}).items()],
             f"- **Cuidado:** {a.get('cuidado', '')}",
+            *([f"- **Revisar antes de publicar:** {' · '.join(a['revisar'])}"] if a.get("revisar") else []),
             *[f"- Referencia ({p.platform}): {p.url}" for p in t["examples"][:3]],
             "",
         ]

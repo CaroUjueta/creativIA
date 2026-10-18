@@ -185,6 +185,7 @@ async def youtube(client: httpx.AsyncClient, start: datetime, end: datetime) -> 
 # --- YouTube Data API v3 (opcional, con YOUTUBE_API_KEY) ---------------------------------
 
 YT_API = "https://www.googleapis.com/youtube/v3"
+YT_LANGS = {"es", "en"}
 
 
 def youtube_mode() -> str:
@@ -212,18 +213,23 @@ async def youtube_api(client: httpx.AsyncClient, start: datetime, end: datetime,
     found = [i for batch in await asyncio.gather(*(one(q, s, e) for q in config.YOUTUBE_QUERIES
                                                     for s, e in day_windows(start, end))) for i in batch]
     by_id = {i["id"]["videoId"]: i for i in found if i.get("id", {}).get("videoId")}
-    stats = {}
+    stats, langs = {}, {}
     ids = list(by_id)
     for k in range(0, len(ids), 50):  # videos.list: 1 unidad por cada 50 videos
-        r = await _get(client, f"{YT_API}/videos", {"part": "statistics", "id": ",".join(ids[k:k + 50])}, headers)
+        r = await _get(client, f"{YT_API}/videos", {"part": "statistics,snippet", "id": ",".join(ids[k:k + 50])}, headers)
         for v in (r.json().get("items", []) if r else []):
             stats[v["id"]] = v.get("statistics", {})
+            sn = v.get("snippet", {})
+            langs[v["id"]] = (sn.get("defaultAudioLanguage") or sn.get("defaultLanguage") or "")[:2].lower()
 
     out = []
     for vid, item in by_id.items():
         sn, st = item["snippet"], stats.get(vid, {})
         published = datetime.fromisoformat(sn["publishedAt"].replace("Z", "+00:00"))
-        if not (start <= published < end):
+        # relevanceLanguage solo prioriza: entre los más vistos se cuelan videos en coreano o portugués.
+        # Se usa el idioma que declara el video y se descartan los que no son de la audiencia.
+        lang = langs.get(vid) or item["lang"]
+        if not (start <= published < end) or lang not in YT_LANGS:
             continue
         out.append(Post(
             id=f"yt:{vid}",
@@ -232,7 +238,7 @@ async def youtube_api(client: httpx.AsyncClient, start: datetime, end: datetime,
             text=scrub(f"{sn.get('title', '')}. {sn.get('description', '')[:400]}"),
             created_at=published,
             author_hash=anonymize_author(sn.get("channelId", vid)),
-            lang=item["lang"],
+            lang=lang,
             # Sin nombre del canal: puede ser una persona.
             views=int(st.get("viewCount", 0)), likes=int(st.get("likeCount", 0)), comments=int(st.get("commentCount", 0)),
         ))

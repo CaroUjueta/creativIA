@@ -76,7 +76,7 @@ Bluesky · Hacker News · YouTube (API o RSS) · Google News RSS · aportes de l
 ```
 
 1. **Recolección** (`radar/sources.py`): APIs públicas sin login. Cada día se toman las N piezas con más interacción por consulta, para comparar *participación* y no volumen bruto.
-2. **Clasificación** (`radar/classify.py`): en el prototipo, un modelo de embeddings multilingüe que corre en el computador compara cada pieza con la descripción de cada tema y de la audiencia; el gancho, el formato y el publicador se detectan con reglas. El tema se guarda como distribución completa y se cuenta de forma "suave" (suma de probabilidades). Con una clave de Jev, el mismo paso se hace con preguntas tipadas (*Choice*, *Score*, *Noul*) y probabilidades calibradas, sin cambiar el resto del flujo.
+2. **Clasificación** (`radar/classify.py`): en el prototipo, un modelo de embeddings multilingüe que corre en el computador compara cada pieza con la descripción de cada tema y de la audiencia; el gancho, el formato y el publicador se detectan con reglas. El tema se guarda como distribución completa y se cuenta de forma "suave" (suma de probabilidades). Para que el modelo local acierte más, `python -m radar.entrenar` le pide una sola vez a un modelo abierto grande (Nemotron, gratis vía OpenRouter) que etiquete unas 1.000 piezas y entrena con ellas una capa pequeña (`data/modelo_local.npz`); después clasificar sigue siendo gratis y sin red. `python -m radar.evaluate --banco` mide el clasificador contra 100 piezas revisadas a mano (`data/evaluacion/revision_manual.csv`). Con una clave de Jev, el mismo paso se hace con preguntas tipadas (*Choice*, *Score*, *Noul*) y probabilidades calibradas, sin cambiar el resto del flujo.
 3. **Detección de tendencias** (`radar/analysis.py`): participación del tema en la semana actual frente a la línea base, promediada entre plataformas para que el volumen de noticias no tape a las redes. *Naciente* = crece al menos un 50 % y aún tiene una participación pequeña; *saturado* = grande y plano.
 4. **Por qué funciona:** interacción de cada pieza relativa a la mediana de su plataforma, agrupada por gancho, formato y franja horaria (hora de Bogotá). Solo se reporta una señal si rinde al menos 1,2× la mediana.
 5. **Filtro de audiencia:** el puntaje de encaje con la audiencia pesa un 35 % en la prioridad; el humo penaliza y la etapa temprana suma.
@@ -173,7 +173,7 @@ Para ajustar la audiencia, la taxonomía, las consultas, los canales de YouTube 
 | `RADAR_ZEN_MODEL` | Modelo de Zen para redactar (por defecto `glm-5.3-flash`). |
 | `RADAR_HASH_SALT` | Sal para el hash de autores. |
 | `RADAR_JEV_MODEL` | Modelo de Jev (por defecto `jev-latest`). |
-| `YOUTUBE_API_KEY` | Opcional. YouTube Data API v3: búsqueda diaria de videos de IA, con lo que YouTube entra al cálculo de crecimiento. Sin ella se usa el RSS de 10 canales. |
+| `YOUTUBE_API_KEY` | Recomendada. YouTube Data API v3 (gratis, 10.000 unidades al día; una corrida usa unas 4.300): búsqueda diaria de videos de IA en español e inglés, con lo que YouTube entra al cálculo de crecimiento. Sin ella se intenta el RSS de 10 canales, que desde octubre de 2026 responde 404. |
 
 > **Nunca subas claves reales al repositorio.** `.env` ya está en `.gitignore`.
 
@@ -251,8 +251,8 @@ Son pocas semanas y pocos casos: es evidencia direccional, no una prueba estadí
 
 ## Alcance y limitaciones
 
-- **Plataformas integradas y probadas:** Bluesky, Hacker News, Google News y YouTube por RSS (10 canales).
-- **YouTube por API:** implementado y probado con respuestas simuladas; falta la primera corrida con una clave real. Sin clave, YouTube no entra en el cálculo de crecimiento (su RSS solo trae los últimos 15 videos por canal) y se usa para explicar y dar ejemplos.
+- **Plataformas integradas y probadas:** Bluesky, Hacker News, Google News y YouTube por la API oficial.
+- **YouTube:** el RSS oficial dejó de responder (404 en todos los canales, octubre de 2026), así que hace falta `YOUTUBE_API_KEY`. Con la API se guarda el idioma que declara cada video y se descartan los que no están en español o inglés: entre los más vistos se colaban videos en coreano y portugués.
 - **LinkedIn, Instagram y TikTok:** no tienen una API pública de descubrimiento sin login, así que entran solo por los aportes de la comunidad (botón Aportar o CSV). No hay integración automática y no la prometemos.
 - **Muestra, no censo:** la tendencia se mide sobre las piezas con más interacción de cada día, no sobre todo lo publicado.
 - **Precisión del clasificador:** el modelo local es pequeño y no fue calibrado con piezas etiquetadas por 30X; el encaje con la audiencia es relativo a la muestra y el gancho y el formato salen de reglas. Conviene validarlo con 50–100 piezas etiquetadas por el equipo.

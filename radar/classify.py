@@ -324,7 +324,8 @@ def _percentile(values):
     return ranks / max(1, len(values) - 1)
 
 
-def _classify_local(posts: list[Post]) -> None:
+def local_embedder():
+    """Función que convierte textos en embeddings normalizados con el modelo local."""
     import numpy as np
     from fastembed import TextEmbedding
 
@@ -333,16 +334,46 @@ def _classify_local(posts: list[Post]) -> None:
     def embed(texts):
         m = np.array(list(model.embed(texts)))
         return m / np.linalg.norm(m, axis=1, keepdims=True)
+    return embed
+
+
+TRAINED = Path(os.environ.get("RADAR_TRAINED_MODEL", "data/modelo_local.npz"))
+
+
+def load_trained() -> dict | None:
+    """Cabezas entrenadas con python -m radar.entrenar, si existen y son del mismo modelo de embeddings."""
+    import numpy as np
+
+    if not TRAINED.exists():
+        return None
+    z = np.load(TRAINED)
+    if str(z["embed_model"]) != LOCAL_MODEL:
+        log.warning("%s se entrenó con otro modelo de embeddings; se usan las descripciones.", TRAINED)
+        return None
+    return {h: (z[f"W_{h}"], [str(o) for o in z[f"opts_{h}"]]) for h in ("topic", "hook", "format", "hype", "relevance")}
+
+
+def _classify_local(posts: list[Post]) -> None:
+    import numpy as np
+
+    from .entrenar import predict
+
+    embed = local_embedder()
+    trained = load_trained()
 
     topic_ids = list(config.TOPICS)
-    topics = embed([config.TOPICS[t] for t in topic_ids])
     anchors = dict(zip(ANCHORS, embed(list(ANCHORS.values()))))
     X = embed([p.text[:1000] for p in posts])
 
-    sims = X @ topics.T
-    logits = sims / TOPIC_TEMPERATURE
-    probs = np.exp(logits - logits.max(axis=1, keepdims=True))
-    probs /= probs.sum(axis=1, keepdims=True)
+    if trained:
+        W, opts = trained["topic"]
+        probs = predict(W, X)[:, [opts.index(t) for t in topic_ids]]
+        heads = {h: (predict(W, X), opts) for h, (W, opts) in trained.items() if h != "topic"}
+    else:
+        sims = X @ embed([config.TOPICS[t] for t in topic_ids]).T
+        logits = sims / TOPIC_TEMPERATURE
+        probs = np.exp(logits - logits.max(axis=1, keepdims=True))
+        probs /= probs.sum(axis=1, keepdims=True)
 
     a = {k: X @ v for k, v in anchors.items()}
     # Encaje = cercanía a la audiencia menos cercanía a lo puramente técnico, relativa al lote.
@@ -364,6 +395,23 @@ def _classify_local(posts: list[Post]) -> None:
             "technical": float(technical[i]),
             "hype": float(hype[i]),
         }
+        if trained:
+            # El tema se cuenta por la opción ganadora: las probabilidades de las cabezas no están calibradas y
+            # repartidas entre 18 temas aplanan el crecimiento. En el backtest del 18 de octubre, el conteo
+            # suave detectó 1 tema en crecimiento en 3 semanas; el conteo por ganador, 10 (7 se sostuvieron)
+            # y 4 en declive (los 4 siguieron abajo).
+            p.labels["topic_probs"] = {t: float(t == p.labels["topic"]) for t in topic_ids}
+            # Con cabezas entrenadas, gancho, formato, humo y encaje salen del modelo y no de reglas.
+            (Ph, hooks), (Pf, formats) = heads["hook"], heads["format"]
+            Pr, levels = heads["relevance"]
+            p.labels.update({
+                "trained": True,
+                "hook": hooks[int(Ph[i].argmax())], "hook_confidence": float(Ph[i].max()),
+                "format": formats[int(Pf[i].argmax())],
+                "hype": float(heads["hype"][0][i, heads["hype"][1].index("1")]),
+                # Valor esperado de la relevancia (0–3), normalizado a 0–1 como el score de Jev.
+                "audience_fit": float(Pr[i] @ np.array([float(l) for l in levels])) / 3,
+            })
 
 
 def classify(posts: list[Post], use_jev: bool, use_local: bool = False, concurrency: int = 16) -> dict:
@@ -371,7 +419,8 @@ def classify(posts: list[Post], use_jev: bool, use_local: bool = False, concurre
     mode = "jev" if use_jev else "local" if use_local else "heuristico"
     stats = {"classifier": mode, "cached": 0, "classified": 0, "input_tokens": 0, "jev_error": ""}
     if mode == "local":
-        log.info("Clasificando %d piezas con el modelo local %s…", len(posts), LOCAL_MODEL)
+        log.info("Clasificando %d piezas con el modelo local %s%s…", len(posts), LOCAL_MODEL,
+                 " y las cabezas entrenadas" if TRAINED.exists() else "")
         _classify_local(posts)
         stats["classified"] = len(posts)
         return stats

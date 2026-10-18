@@ -15,5 +15,7 @@ RUN pip install --no-cache-dir --user -r requirements.txt huggingface_hub
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
 
 COPY --chown=user radar radar
+# Cabezas entrenadas sobre esos embeddings (python -m radar.entrenar); sin ellas se usan las descripciones.
+COPY --chown=user data/modelo_local.npz data/modelo_local.npz
 EXPOSE 7860
 CMD ["python", "-m", "radar.web", "--no-open"]
