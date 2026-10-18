@@ -43,6 +43,7 @@ class Post:
     comments: int = 0
     views: int = 0
     labels: dict = field(default_factory=dict)  # salida del clasificador
+    app: str = ""            # app de la que habla una noticia (linkedin, instagram, tiktok, youtube)
 
     @property
     def interactions(self) -> int:

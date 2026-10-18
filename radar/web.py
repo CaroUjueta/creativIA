@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import pipeline, report, sources
+from . import account, pipeline, report, sources
 from .models import scrub
 
 log = logging.getLogger("radar")
@@ -63,7 +63,7 @@ def page(out: Path, name: str | None, top: int) -> str:
         name = reports[0] if reports else None
     if name:
         data = json.loads((out / f"{name}.json").read_text(encoding="utf-8"))
-        html = report.render_html(data, data.get("adaptations", {}), data["meta"], len(data.get("adaptations", {})) or top,
+        html = report.render_html(data, data.get("adaptations", {}), data["meta"], data["meta"].get("top") or len(data.get("adaptations", {})) or top,
                                   report.latest_backtest(out))
     else:
         html = report.render_empty(top)
@@ -133,12 +133,15 @@ def make_handler(runner: Runner):
                 self._json(HTTPStatus.OK, {"reports": list_reports(out)})
             elif url.path == "/api/community":
                 self._json(HTTPStatus.OK, {"count": sources.count_community(community)})
+            elif url.path == "/api/account":
+                self._json(HTTPStatus.OK, {"profile": account.load_profile() or account.DEFAULT,
+                                           "saved": account.PROFILE.exists(), "metrics": account.metrics_status()})
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "No existe"})
 
         def do_POST(self) -> None:
             path = urlparse(self.path).path
-            if path not in ("/api/run", "/api/community"):
+            if path not in ("/api/run", "/api/community", "/api/account", "/api/account/metrics"):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "No existe"})
                 return
             # Evita que otra página abierta en el navegador dispare el radar o escriba aportes.
@@ -148,6 +151,10 @@ def make_handler(runner: Runner):
                 return
             if path == "/api/community":
                 self._contribute()
+            elif path == "/api/account":
+                self._account()
+            elif path == "/api/account/metrics":
+                self._account_metrics()
             elif runner.start():
                 self._json(HTTPStatus.ACCEPTED, runner.status)
             else:
@@ -166,6 +173,35 @@ def make_handler(runner: Runner):
             with runner.lock:
                 total = sources.append_community(community, row)
             self._json(HTTPStatus.CREATED, {"count": total})
+
+        def _body(self, limit: int) -> bytes | None:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= limit:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Envío vacío o demasiado grande"})
+                return None
+            return self.rfile.read(length)
+
+        def _account(self) -> None:
+            raw = self._body(20_000)
+            if raw is None:
+                return
+            try:
+                profile = account.save_profile(json.loads(raw))
+            except (ValueError, AttributeError) as e:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(e) if isinstance(e, ValueError) else "Formato inválido"})
+                return
+            self._json(HTTPStatus.OK, {"profile": profile})
+
+        def _account_metrics(self) -> None:
+            raw = self._body(5_000_000)
+            if raw is None:
+                return
+            try:
+                status = account.save_metrics(raw.decode("utf-8-sig", errors="replace"))
+            except ValueError as e:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
+                return
+            self._json(HTTPStatus.OK, {"metrics": status})
 
         def log_message(self, fmt: str, *args) -> None:  # sin una línea por cada consulta de estado
             pass
@@ -200,7 +236,7 @@ def main() -> None:
     runner = Runner(pipeline.Options(out=args.out, no_jev=args.no_jev, no_llm=args.no_llm))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(runner))
     url = f"http://localhost:{args.port}"
-    print(f"Radar de contenido IA en {url}  (Ctrl+C para salir)")
+    print(f"CreativIA · Radar de contenido en {url}  (Ctrl+C para salir)")
     if not args.no_open:
         open_browser(url)
     try:

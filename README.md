@@ -196,6 +196,15 @@ linkedin,https://www.linkedin.com/posts/...,"Texto del post",2026-10-15T10:00:00
 
 En la app, el botón **Aportar** hace lo mismo sin editar archivos: valida el enlace y la fecha, pide confirmar que la publicación es pública, borra menciones, correos y teléfonos, y la guarda en `data/comunidad.csv`, que el radar usa en cada actualización.
 
+### Cuenta para la que se produce (@crece30x)
+
+En la app, el botón con el nombre de la cuenta abre dos cosas:
+
+- **Ficha de la cuenta** (`data/cuenta.json`): de qué habla, a quién le habla, tono, pilares, formatos que usa, llamado a la acción habitual, qué evitar y enlaces a sus mejores posts.
+- **Exportación de Meta Business Suite** (Estadísticas → Contenido → Exportar datos, en CSV): el radar mide qué formatos, temas y ganchos le funcionan a la cuenta comparando la interacción de cada post con la mediana de la propia cuenta. **Solo se guarda lo que es público en cada post** (texto, fecha, enlace, tipo, me gusta, comentarios y vistas); alcance, guardados y compartidos son métricas privadas y se descartan al importar (`data/cuenta_metricas.csv`).
+
+Con la ficha, cada tendencia trae una pieza **«Para @crece30x»**: pilar, formato (reel, carrusel o historia, priorizando lo que le funciona a la cuenta), estructura por láminas o momentos, caption y llamado a la acción. Ambos archivos están en `.gitignore` y se aplican en la siguiente actualización del radar.
+
 ## ¿Acierta el radar? (backtest)
 
 ```bash

@@ -250,7 +250,8 @@ def _classify_heuristic(p: Post) -> dict:
             "dato_sorprendente" if re.search(r"\d+\s?%|\$\s?\d|\d+ (mil|millones|billion|million)", first) else
             "noticia_urgente" if re.search(r"acaba de|just |breaking|última hora|anuncia|announce|launch|lanza", first) else
             "advertencia" if re.search(r"deja de|stop |cuidado|error|mistake|warning", first) else
-            "opinion")
+            "opinion" if re.search(r"\b(creo|pienso|opino|mi opinión|en mi experiencia|i think|imo|in my opinion|hot take)\b", first, re.I) else
+            "sin_gancho")  # sin una regla que lo detecte, no se adivina un gancho
     business = bool(re.search(r"empresa|negocio|business|equipo|team|líder|leader|trabajo|work|product", t))
     return {
         "classifier": "heuristico",

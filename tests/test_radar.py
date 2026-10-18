@@ -62,6 +62,34 @@ class TestAnalysis(unittest.TestCase):
         self.assertEqual(analysis.stage_of(5.0, 0.01, 1), "estable")  # muy poca evidencia
 
 
+class TestByApp(unittest.TestCase):
+    def test_each_app_gets_its_own_ranking(self):
+        # Las noticias sobre TikTok hablan cada vez más de 'ia_y_sociedad'; las de LinkedIn, de 'agentes_ia'.
+        posts, i = [], 0
+        for day in range(21):
+            ts = START + timedelta(days=day, hours=12)
+            for app, topic in (("tiktok", "ia_y_sociedad"), ("linkedin", "agentes_ia")):
+                for t, n in ((topic, 6 if day >= 14 else 1), ("nuevos_modelos", 6)):
+                    for _ in range(n):
+                        i += 1
+                        posts.append(Post(id=str(i), platform="google_news", url="", text=f"n {i}", created_at=ts,
+                                          author_hash=f"m{i}", labels=labels(t), app=app))
+        by = analysis.by_app(posts, START, END)
+        self.assertEqual(set(by), {"tiktok", "linkedin"})
+        self.assertEqual(by["tiktok"]["topics"][0]["id"], "ia_y_sociedad")
+        self.assertEqual(by["linkedin"]["topics"][0]["id"], "agentes_ia")
+        self.assertTrue(by["tiktok"]["momentum"])
+        self.assertEqual(by["tiktok"]["sources"], {"google_news": 84})
+
+    def test_community_posts_count_for_their_app_without_growth(self):
+        recent = [p for p in make_posts() if p.created_at >= END - timedelta(days=7)]
+        for p in recent:
+            p.platform = "linkedin"
+        by = analysis.by_app(recent, START, END)
+        self.assertFalse(by["linkedin"]["momentum"])
+        self.assertTrue(all(t["growth"] == 1.0 for t in by["linkedin"]["topics"]))
+
+
 class TestFeed(unittest.TestCase):
     def test_feed_is_ranked_by_lift_and_has_no_author(self):
         feed = analysis.analyze(make_posts(), START, END)["feed"]
@@ -243,7 +271,7 @@ class TestZenAdapter(unittest.TestCase):
         real_client = httpx.Client
         with mock.patch.dict(os.environ, {"OPENCODE_API_KEY": "test"}), \
              mock.patch("httpx.Client", lambda **kw: real_client(transport=transport, **kw)):
-            out = adapt._with_zen(topics)
+            out = adapt._with_zen(topics, adapt.SYSTEM, None)
         self.assertEqual(out[topics[0]["id"]]["angulo"], "y")
         self.assertIn(topics[1]["id"], out)  # completado con plantilla
 
@@ -278,3 +306,66 @@ class TestOpenRouterWriter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAccount(unittest.TestCase):
+    CSV_EN = ("Post ID,Description,Publish time,Permalink,Post type,Reach,Likes,Comments,Saves,Shares\n"
+              "1,\"Cómo usar IA en tu equipo, paso a paso\",10/01/2026 09:00,https://www.instagram.com/p/a/,IG carousel,5000,320,40,90,12\n"
+              "2,Reel sobre agentes de IA,10/03/2026 18:30,https://www.instagram.com/reel/b/,IG reel,9000,150,10,20,5\n")
+
+    def test_meta_export_keeps_only_public_columns(self):
+        from radar import account
+        rows = account.parse_meta_csv(self.CSV_EN)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["type"], "carrusel")
+        self.assertEqual(rows[1]["type"], "reel")
+        self.assertEqual(rows[0]["likes"], 320)
+        self.assertEqual(set(rows[0]), set(account.FIELDS))  # sin alcance, guardados ni compartidos
+
+    def test_meta_export_in_spanish(self):
+        from radar import account
+        rows = account.parse_meta_csv("Descripción,Hora de publicación,Enlace permanente,Tipo de publicación,Me gusta,Comentarios\n"
+                                      "Tres herramientas de IA,2026-10-05 10:00,https://www.instagram.com/p/c/,Imagen de IG,\"1.204\",33\n")
+        self.assertEqual(rows[0]["likes"], 1204)
+        self.assertEqual(rows[0]["type"], "imagen")
+
+    def test_profile_only_accepts_public_instagram_links(self):
+        from radar import account
+        with self.assertRaises(ValueError):
+            account.validate_profile({"handle": "@crece30x", "mejores_posts": "https://example.com/x"})
+        p = account.validate_profile({"handle": "@crece30x", "pilares": "IA para líderes\nVentas", "formatos": ["reel", "nada"]})
+        self.assertEqual(p["pilares"], ["IA para líderes", "Ventas"])
+        self.assertEqual(p["formatos"], ["reel"])
+
+    def test_performance_and_templates_for_the_account(self):
+        from radar import account, adapt
+        posts = [Post(id=str(i), platform="instagram", url="", text=f"p {i}", created_at=END - timedelta(days=i),
+                      author_hash="x", likes=100 if i % 2 else 10, publisher="carrusel" if i % 2 else "reel",
+                      labels=labels("agentes_ia")) for i in range(8)]
+        perf = account.performance(posts)
+        self.assertEqual(perf["by_type"][0]["value"], "carrusel")
+        topics = analysis.analyze(make_posts(), START, END)["topics"][:1]
+        profile = {**account.DEFAULT, "pilares": ["Agentes y automatización", "Ventas"], "formatos": ["reel", "carrusel"]}
+        out = adapt._with_templates(topics, {"profile": profile, "performance": perf})
+        pc = out[topics[0]["id"]]["para_cuenta"]
+        self.assertTrue(pc["formato"].startswith("carrusel"))  # el formato que mejor le funciona a la cuenta
+        self.assertEqual(pc["pilar"], "Agentes y automatización")
+        self.assertIn("@crece30x", account.context(profile, perf))
+
+
+class TestEvaluationFixes(unittest.TestCase):
+    def test_writer_only_gets_patterns_with_enough_posts(self):
+        from radar import adapt
+        topic = analysis.analyze(make_posts(), START, END)["topics"][0]
+        topic["why"]["timing"] = [{"value": "lunes tarde", "lift": 295.7, "n": 2}, {"value": "martes mañana", "lift": 1.5, "n": 9}]
+        ev = adapt._evidence([topic])[0]
+        self.assertEqual([r["value"] for r in ev["mejores_franjas"]], ["martes mañana"])
+
+    def test_no_hook_rule_means_no_hook(self):
+        from radar import classify
+        p = Post(id="1", platform="bluesky", url="", text="Nuevo modelo de IA disponible para empresas", created_at=END, author_hash="a")
+        self.assertEqual(classify._classify_heuristic(p)["hook"], "sin_gancho")
+
+    def test_checker_ignores_durations(self):
+        from radar import evaluate
+        self.assertEqual(evaluate.DURATION.sub(" ", "Video de 60 segundos, carrusel de 6–8 láminas").count("60"), 0)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from datetime import datetime
@@ -62,30 +63,36 @@ def _signals(why: dict) -> list[dict]:
     return out
 
 
+def _topic(rank: int, t: dict, adaptations: dict) -> dict:
+    return {
+        "rank": rank, "id": t["id"], "label": t["label"], "description": t.get("description", ""),
+        "stage": t["stage"], "growth": t["growth"], "share": t["share_current"], "share_base": t["share_baseline"],
+        "fit": t["audience_fit"], "practical": t["practical"], "hype": t.get("hype", 0),
+        "n_posts": t["n_posts"], "n_authors": t["n_authors"], "daily": t["daily"],
+        "platforms": {PLATFORM_LABEL.get(k, k): v for k, v in t["platforms"].items()},
+        "signals": _signals(t["why"]),
+        "publishers": [k.replace("_", " ") for k, _ in t["why"].get("publishers", [])[:2]],
+        "lang_es": t["why"].get("lang_share", {}).get("es", 0),
+        "adaptation": adaptations.get(t["id"], {}),
+        "examples": [_example(p) for p in t["examples"][:4]],
+    }
+
+
 def _payload(result: dict, adaptations: dict, meta: dict, n: int) -> dict:
     days = result["days"]
     split_day = result["window"]["split"][:10]
-    topics = []
-    for rank, t in enumerate(top_topics(result, n), 1):
-        topics.append({
-            "rank": rank, "id": t["id"], "label": t["label"], "description": t.get("description", ""),
-            "stage": t["stage"], "growth": t["growth"], "share": t["share_current"], "share_base": t["share_baseline"],
-            "fit": t["audience_fit"], "practical": t["practical"], "hype": t.get("hype", 0),
-            "n_posts": t["n_posts"], "n_authors": t["n_authors"], "daily": t["daily"],
-            "platforms": {PLATFORM_LABEL.get(k, k): v for k, v in t["platforms"].items()},
-            "signals": _signals(t["why"]),
-            "publishers": [k.replace("_", " ") for k, _ in t["why"].get("publishers", [])[:2]],
-            "lang_es": t["why"].get("lang_share", {}).get("es", 0),
-            "adaptation": adaptations.get(t["id"], {}),
-            "examples": [_example(p) for p in t["examples"][:4]],
-        })
+    topics = [_topic(rank, t, adaptations) for rank, t in enumerate(top_topics(result, n), 1)]
+    by_app = {PLATFORM_LABEL.get(k, k): {"momentum": v["momentum"], "n": v["n_current"],
+                                         "sources": {PLATFORM_LABEL.get(s, s): c for s, c in v.get("sources", {}).items()},
+                                         "topics": [_topic(r, t, adaptations) for r, t in enumerate(v["topics"][:n], 1)]}
+              for k, v in result.get("by_app", {}).items()}
     counts = result["counts"]
     return {
         "n": n, "days": days, "split_index": next((i for i, d in enumerate(days) if d >= split_day), len(days) - 1),
         "window": {k: v[:10] for k, v in result["window"].items()},
         "counts": {**counts, "by_platform": {PLATFORM_LABEL.get(k, k): v for k, v in counts["by_platform"].items()},
                    "momentum_platforms": [PLATFORM_LABEL.get(k, k) for k in counts["momentum_platforms"]]},
-        "meta": meta, "stages": STAGE_LABEL, "topics": topics, "terms": result["emerging_terms"],
+        "meta": meta, "stages": STAGE_LABEL, "topics": topics, "by_app": by_app, "account": result.get("account"), "terms": result["emerging_terms"],
         "feed": [{**f, "platform": PLATFORM_LABEL.get(f["platform"], f["platform"]), "text": _feed_text(f),
                   "topic_label": config.TOPIC_NAMES.get(f["topic"], f["topic"]), "hook": f["hook"].replace("_", " ")}
                  for f in result.get("feed", [])],
@@ -110,17 +117,21 @@ def render_html(result: dict, adaptations: dict, meta: dict, n: int = 10, backte
     data = json.dumps({**_payload(result, adaptations, meta, n), "backtest": backtest}, ensure_ascii=False, default=str)
     # Evita que un texto con "</script>" cierre la etiqueta de datos.
     data = data.replace("<", "\\u003c")
-    return HTML_TEMPLATE.replace("__N__", str(n)).replace("__DATA__", data)
+    return HTML_TEMPLATE.replace("__N__", str(n)).replace("__LOGO__", LOGO).replace("__DATA__", data)
 
 
 def render_empty(n: int = 10) -> str:
     """Página sin datos, con el botón para correr el radar por primera vez."""
-    return HTML_TEMPLATE.replace("__N__", str(n)).replace("__DATA__", "null")
+    return HTML_TEMPLATE.replace("__N__", str(n)).replace("__LOGO__", LOGO).replace("__DATA__", "null")
 
+
+# Logo de CreativIA embebido: el reporte es un solo archivo que se abre sin la app.
+LOGO = "data:image/png;base64," + base64.b64encode((Path(__file__).parent / "assets" / "logo.png").read_bytes()).decode()
 
 HTML_TEMPLATE = r"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Radar de contenido IA</title>
+<title>CreativIA · Radar de contenido</title>
+<link rel="icon" type="image/png" href="__LOGO__">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
@@ -149,8 +160,7 @@ button{font:inherit;color:inherit}
 .bar{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line)}
 .bar-in{max-width:975px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:19px;letter-spacing:-.03em}
-.brand-mark{width:28px;height:28px;border-radius:9px;background:var(--ig);display:grid;place-items:center}
-.brand-mark::after{content:"";width:12px;height:12px;border-radius:50%;border:2.5px solid #fff}
+.brand-mark{width:30px;height:30px;flex:none;background:url(__LOGO__) center/contain no-repeat}
 .seg{display:inline-flex;background:var(--s2);border-radius:10px;padding:3px}
 .seg button{background:none;border:0;color:var(--muted);padding:6px 16px;border-radius:8px;cursor:pointer;font-weight:700;font-size:14px}
 .seg button[aria-pressed="true"]{background:var(--s1);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
@@ -204,6 +214,7 @@ button{font:inherit;color:inherit}
 .cv-name{font-weight:900;letter-spacing:-.035em;line-height:1.02;font-size:max(14px,11cqi);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden;text-wrap:balance}
 .cv.big .cv-name{font-size:max(22px,9.5cqi)}
 .cv-meta{display:block;margin-top:.5em;font-size:max(11px,4.6cqi);font-weight:600;opacity:.9}
+.cv-meta{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .cv:hover img{transform:scale(1.05)}
 .cv:hover::after{content:"";position:absolute;inset:0;background:rgba(0,0,0,.12);z-index:1}
 .cv:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
@@ -320,6 +331,13 @@ h4{font-size:13px;color:var(--muted);font-weight:600;margin:16px 0 8px}
 .fmts{display:grid}
 .fmt{display:grid;grid-template-columns:10px 80px minmax(0,1fr);gap:10px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
 .fmt:last-child{border-bottom:0}
+.fmt.on{background:var(--s2);border-radius:10px;padding:10px;border-bottom:0;margin-bottom:6px}
+.fmt.on span{color:var(--ink);font-weight:600}
+.fmt.dim{opacity:.55}
+.net{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 6px}
+.net>span{font-size:13px;font-weight:600;color:var(--muted)}
+.net .chip i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.sv-fmt{margin-top:8px;font-size:13px;font-weight:600;opacity:.95}
 .fmt i{width:8px;height:8px;border-radius:50%;align-self:center}
 .fmt b{font-weight:700}
 .fmt span{color:var(--ink-2)}
@@ -409,6 +427,21 @@ body:not(.feed-mode) .tk-nav{display:none}
 .form-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center}
 .form-msg{font-size:13px;margin-right:auto}
 .form-msg.err{color:var(--pink)}.form-msg.ok{color:var(--up)}
+.form fieldset{border:0;padding:0;margin:0;display:flex;gap:14px;flex-wrap:wrap;font-size:13px}
+.form legend{font-size:13px;font-weight:600;margin-bottom:5px}
+.form hr{border:0;border-top:1px solid var(--line);margin:6px 0}
+.acct{background:var(--s1);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px}
+.acct h4{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.acct .pill{display:inline-block;background:var(--s2);border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;margin:0 6px 8px 0}
+.acct ol{margin:6px 0 10px;padding-left:20px;font-size:14px;line-height:1.45}
+.acct .cap{font-size:14px;line-height:1.45;margin:0 0 8px}
+.acct .cta{font-size:14px;font-weight:700}
+.perf{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.perf>div{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--s1)}
+.perf h3{margin:0 0 8px;font-size:13px;color:var(--muted);font-weight:700}
+.perf li{display:flex;justify-content:space-between;gap:10px;font-size:14px;padding:3px 0}
+.perf ul{list-style:none;margin:0;padding:0}
+.perf a{color:inherit;text-decoration:none}.perf a:hover{text-decoration:underline}
 .ghost{background:none;border:0;color:var(--muted);font-weight:600;cursor:pointer;padding:8px 10px}
 .run-card.wide{width:min(560px,100%);max-height:calc(100dvh - 32px);overflow:auto}
 .proof{margin-top:34px;border:1px solid var(--line);border-radius:14px;padding:18px 18px 14px}
@@ -457,7 +490,7 @@ body:not(.feed-mode) .tk-nav{display:none}
   .cv{border-radius:2px}
   .cv-name{font-size:max(12px,11cqi)}
   .cv-meta{display:none}
-  .cv.big .cv-meta,.cv.w2 .cv-meta,.cv.w3 .cv-meta{display:block}
+  .cv.big .cv-meta,.cv.w2 .cv-meta,.cv.w3 .cv-meta{display:-webkit-box}
   .sheet{padding:0;align-items:end}
   .panel{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr);width:100%;height:94dvh;border-radius:14px 14px 0 0;animation:slide-u .22s ease-out}
   .p-cover{min-height:200px;padding:20px}
@@ -479,10 +512,11 @@ body:not(.feed-mode) .tk-nav{display:none}
 </style></head>
 <body>
 <header class="bar"><div class="bar-in">
-  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">Radar IA</span></div>
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">CreativIA</span></div>
   <div class="seg" role="group" aria-label="Vista"><button data-view="radar" aria-pressed="true">Tendencias</button><button data-view="feed" aria-pressed="false">Feed</button></div>
   <div class="actions"><select class="hist" id="hist" aria-label="Reportes anteriores" hidden></select>
     <button class="add-btn" id="add" aria-label="Aportar una publicación" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="run-label">Aportar</span></button>
+    <button class="add-btn" id="acct-btn" aria-label="Cuenta para la que se produce" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="run-label" id="acct-label">Cuenta</span></button>
     <button class="run-btn" id="run" aria-label="Actualizar radar" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg><span class="run-label">Actualizar</span></button>
     <span class="mode" id="mode"><i></i><span></span></span></div>
 </div></header>
@@ -493,8 +527,10 @@ body:not(.feed-mode) .tk-nav{display:none}
 
 <div class="view" id="view-radar"><div class="wrap">
   <div class="stories" id="stories" aria-label="Historias de los temas"></div>
+  <div class="net" id="net-row" role="group" aria-label="Tendencias por app"><span>Tendencias en</span><div class="chips" id="net"></div></div>
   <div class="head"><div><h1>Tendencias de la semana</h1><p id="sub"></p></div><div class="chips" id="filters"></div></div>
   <div class="grid" id="grid"></div>
+  <section class="sect" id="acct-sect" hidden></section>
   <section class="sect"><h2>Palabras que están sonando</h2><p>Se dispararon esta semana y todavía no tienen tema propio.</p><div class="tags" id="terms"></div></section>
   <section class="proof" id="proof" hidden></section>
   <details class="fold" id="map-fold"><summary>Mapa de oportunidades</summary><div class="map"><svg id="map" viewBox="0 0 640 380" role="img" aria-label="Crecimiento frente a utilidad para la audiencia"></svg></div>
@@ -547,6 +583,31 @@ body:not(.feed-mode) .tk-nav{display:none}
     <label class="check"><input type="checkbox" name="public"> Es una publicación pública, la vi sin iniciar sesión en una cuenta ajena y no tiene datos personales.</label>
     <div class="form-actions"><span class="form-msg" id="contrib-msg" role="status"></span>
       <button type="button" class="ghost" id="contrib-close">Cerrar</button><button class="run-btn" type="submit">Guardar aporte</button></div>
+  </form></div></div>
+
+<div class="overlay" id="acct" hidden><div class="run-card wide" role="dialog" aria-modal="true" aria-labelledby="acct-t">
+  <h3 id="acct-t">Cuenta para la que producimos</h3>
+  <p>Con esta ficha, cada tendencia trae una pieza lista para la cuenta: pilar, formato, estructura, caption y llamado a la acción.</p>
+  <form class="form" id="acct-form" novalidate>
+    <div class="row2"><label>Cuenta de Instagram<input name="handle" placeholder="@crece30x" required></label>
+      <label>Llamado a la acción habitual<input name="cta" maxlength="200" placeholder="Guarda este post…"></label></div>
+    <label>De qué habla la cuenta<textarea name="descripcion" maxlength="600"></textarea></label>
+    <label>A quién le habla<input name="audiencia" maxlength="400"></label>
+    <label>Tono<input name="tono" maxlength="300" placeholder="Directo, práctico, cercano…"></label>
+    <label>Pilares de contenido <small>(uno por línea)</small><textarea name="pilares" style="min-height:72px"></textarea></label>
+    <fieldset><legend>Formatos que usa</legend>
+      <label class="check"><input type="checkbox" name="formatos" value="reel"> Reel</label>
+      <label class="check"><input type="checkbox" name="formatos" value="carrusel"> Carrusel</label>
+      <label class="check"><input type="checkbox" name="formatos" value="imagen"> Imagen</label>
+      <label class="check"><input type="checkbox" name="formatos" value="historia"> Historia</label></fieldset>
+    <label>Qué evitar<input name="evitar" maxlength="300"></label>
+    <label>Mejores posts <small>(enlaces públicos de instagram.com, uno por línea)</small><textarea name="mejores_posts" style="min-height:72px"></textarea></label>
+    <div class="form-actions"><span class="form-msg" id="acct-msg" role="status"></span><button class="run-btn" type="submit">Guardar ficha</button></div>
+    <hr>
+    <label>Exportación de Meta Business Suite <small>(Estadísticas → Contenido → Exportar datos, en CSV). Solo se guarda lo público de cada post: texto, fecha, enlace, tipo, me gusta, comentarios y vistas.</small>
+      <input type="file" name="csv" accept=".csv,text/csv"></label>
+    <div class="form-actions"><span class="form-msg" id="acct-csv-msg" role="status"></span>
+      <button type="button" class="ghost" id="acct-close">Cerrar</button></div>
   </form></div></div>
 
 <script type="application/json" id="data">__DATA__</script>
@@ -651,9 +712,58 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#contrib").hidden) $("#contrib").hidden = true; });
 
+// Ficha de la cuenta y exportación de Meta. Entran en la próxima actualización del radar.
+const acctForm = $("#acct-form");
+const metricsTxt = m => m.count ? `${m.count} publicaciones importadas (${m.from} a ${m.to}).` : "Todavía no hay exportación.";
+async function openAcct() {
+  $("#acct").hidden = false; $("#acct-msg").textContent = "";
+  try {
+    const j = await (await fetch("/api/account")).json(), pf = j.profile;
+    for (const k of ["handle", "cta", "descripcion", "audiencia", "tono", "evitar"]) acctForm[k].value = pf[k] || "";
+    acctForm.pilares.value = (pf.pilares || []).join("\n");
+    acctForm.mejores_posts.value = (pf.mejores_posts || []).join("\n");
+    $$('input[name="formatos"]', acctForm).forEach(c => c.checked = (pf.formatos || []).includes(c.value));
+    $("#acct-csv-msg").className = "form-msg"; $("#acct-csv-msg").textContent = metricsTxt(j.metrics);
+  } catch (err) {}
+  acctForm.handle.focus();
+}
+acctForm.addEventListener("submit", async e => {
+  e.preventDefault();
+  const body = Object.fromEntries(new FormData(acctForm));
+  delete body.csv;
+  body.formatos = $$('input[name="formatos"]:checked', acctForm).map(c => c.value);
+  const msg = $("#acct-msg");
+  msg.className = "form-msg"; msg.textContent = "Guardando…";
+  try {
+    const r = await fetch("/api/account", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    $("#acct-label").textContent = j.profile.handle;
+    msg.className = "form-msg ok"; msg.textContent = "Guardada. Se aplica en la próxima actualización.";
+  } catch (err) { msg.className = "form-msg err"; msg.textContent = err.message || "No se pudo guardar"; }
+});
+acctForm.csv.addEventListener("change", async () => {
+  const file = acctForm.csv.files[0], msg = $("#acct-csv-msg");
+  if (!file) return;
+  msg.className = "form-msg"; msg.textContent = "Importando…";
+  try {
+    const r = await fetch("/api/account/metrics", {method: "POST", headers: {"Content-Type": "text/csv"}, body: await file.text()});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    msg.className = "form-msg ok"; msg.textContent = metricsTxt(j.metrics) + " Se aplica en la próxima actualización.";
+  } catch (err) { msg.className = "form-msg err"; msg.textContent = err.message || "No se pudo importar"; }
+  acctForm.csv.value = "";
+});
+document.addEventListener("click", e => {
+  if (e.target.closest("#acct-btn")) openAcct();
+  if (e.target.closest("#acct-close") || e.target.id === "acct") $("#acct").hidden = true;
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#acct").hidden) $("#acct").hidden = true; });
+
 if (APP) {
   $("#run").hidden = false;
   $("#add").hidden = false;
+  $("#acct-btn").hidden = false;
   if (APP.reports.length) {
     const h = $("#hist"); h.hidden = false;
     h.innerHTML = APP.reports.map(r => `<option value="${esc(r)}" ${r === APP.current ? "selected" : ""}>${esc(fmtDay(r.replace("radar-", "")))}</option>`).join("");
@@ -673,82 +783,163 @@ const FEED = D.feed || [];
 $("#mode").classList.add(mode);
 $("#mode span").textContent = {jev: "Jev", local: "Modo local", heuristico: "Modo básico"}[mode] || mode;
 $("#mode").title = mode === "jev" ? "Clasificado con Jev" : D.meta.jev_error ? `Jev no respondió (${D.meta.jev_error}); se usó el respaldo` : "Sin clave de Jev: resultados aproximados";
-$("#sub").innerHTML = `${fmtDay(D.window.split)} – ${fmtDay(D.window.end)} · ${C.ai.toLocaleString("es")} publicaciones · ${Object.keys(C.by_platform).length} fuentes` +
-  (mode === "jev" ? "" : ` · <b>●</b> sin Jev, números aproximados`);
+// Pestañas por app: "General" usa el cálculo de siempre; cada app tiene su propio ranking y
+// crecimiento, calculados con noticias y artículos sobre IA en esa app (analysis.by_app).
+const BYP = D.by_app || {};
+const NETS = ["LinkedIn", "Instagram", "TikTok", "YouTube"].filter(k => BYP[k]);
+const FMT_KEY = {LinkedIn: "linkedin", Instagram: "instagram", TikTok: "tiktok", YouTube: "youtube"};
+const SRC_TXT = {"Google News": ["noticia", "noticias"], YouTube: ["video", "videos"]};
+let net = "todas";
+try { const v = localStorage.getItem("radar-net"); if (NETS.includes(v)) net = v; } catch (e) {}
+let T = D.topics, MOM = true;
+const fmtFor = t => (t.adaptation?.formatos || {})[FMT_KEY[net]] || "";
+const G = t => MOM ? growth(t.growth) : "—";
+
+function renderSub() {
+  const warn = txt => ` · <b>●</b> ${txt}`;
+  if (net === "todas") {
+    $("#sub").innerHTML = `${fmtDay(D.window.split)} – ${fmtDay(D.window.end)} · ${C.ai.toLocaleString("es")} publicaciones · ${Object.keys(C.by_platform).length} fuentes` +
+      (mode === "jev" ? "" : warn("sin Jev, números aproximados"));
+    return;
+  }
+  const v = BYP[net];
+  const parts = Object.entries(v.sources || {}).map(([k, c]) => `${c} ${(SRC_TXT[k] || ["aporte de la comunidad", "aportes de la comunidad"])[c === 1 ? 0 : 1]}`);
+  $("#sub").innerHTML = `${fmtDay(D.window.split)} – ${fmtDay(D.window.end)} · Noticias y artículos sobre IA en ${esc(net)} · ${parts.join(" · ")}` +
+    (v.n < 20 ? warn("pocos datos, tómalo como pista") : "") +
+    (MOM ? "" : warn("sin semanas comparables: el orden es por utilidad e interacción, no por crecimiento"));
+}
 
 // Portada de cada tema: la miniatura de un video del tema si existe; si no, un bloque de color.
 const thumbFor = t => {
   const yt = [...t.examples, ...FEED.filter(p => p.topic === t.id)].map(p => p.platform === "YouTube" && ytId(p.url)).find(Boolean);
   return yt ? `https://i.ytimg.com/vi/${yt}/hqdefault.jpg` : null;
 };
-const THUMB = Object.fromEntries(D.topics.map(t => [t.id, thumbFor(t)]));
+const THUMB = {};
+[D.topics, ...Object.values(BYP).map(v => v.topics)].flat().forEach(t => { THUMB[t.id] ??= thumbFor(t); });
 const STOP = new Set(["ia", "y", "e", "de", "del", "la", "el", "en", "con", "para", "frente", "a", "los", "las"]);
 const shortName = label => { const w = label.split(/\s+/).find(x => !STOP.has(x.toLowerCase())) || label; return w[0].toUpperCase() + w.slice(1); };
 
 // Historias
-$("#stories").innerHTML = D.topics.map((t, i) => `
-  <button class="story ${t.growth < 1 && !["naciente", "en_crecimiento"].includes(t.stage) ? "cold" : ""}" data-i="${i}" aria-label="${esc(`Historia ${t.rank}: ${t.label}`)}">
+function renderStories() {
+  $("#stories").innerHTML = T.map((t, i) => `
+  <button class="story ${MOM && t.growth < 1 && !["naciente", "en_crecimiento"].includes(t.stage) ? "cold" : ""}" data-i="${i}" aria-label="${esc(`Historia ${t.rank}: ${t.label}`)}">
     <span class="ring"><span class="ring-in" style="${gradStyle(t.id)}${THUMB[t.id] ? `;background-image:url('${THUMB[t.id]}')` : ""}">${THUMB[t.id] ? "" : t.rank}</span></span>
     <span class="lbl">${esc(shortName(t.label))}</span></button>`).join("");
+}
 $("#stories").addEventListener("click", e => { const s = e.target.closest(".story"); if (s) openStories(+s.dataset.i); });
 
 // Cuadrícula de portadas. El #1 ocupa 2×2 y la última fila se completa con una portada ancha.
 let stageFilter = "todos";
 function cover(t, cls) {
   const img = THUMB[t.id];
-  return `<button class="cv ${cls} ${img ? "photo" : ""}" data-id="${esc(t.id)}" style="${gradStyle(t.id)}" aria-label="${esc(`${t.rank}. ${t.label}, ${growth(t.growth)}`)}">
+  const pill = MOM ? `${t.growth >= 1 ? "▲" : "▼"} ${growth(t.growth).replace(/^[+−]/, "")}` : `${t.n_posts} pub.`;
+  const meta = fmtFor(t) ? `${esc(net)}: ${esc(fmtFor(t))}` : MOM ? `${t.n_posts} publicaciones · ${esc(D.stages[t.stage])}` : `útil para ${pct(t.fit)} de la audiencia`;
+  return `<button class="cv ${cls} ${img ? "photo" : ""}" data-id="${esc(t.id)}" style="${gradStyle(t.id)}" aria-label="${esc(`${t.rank}. ${t.label}, ${G(t)}`)}">
     ${img ? `<img src="${img}" alt="" loading="lazy">` : ""}
-    <span class="cv-in"><span class="cv-top"><span class="cv-rank">${t.rank}</span><span class="cv-g num ${gClass(t.growth)}">${t.growth >= 1 ? "▲" : "▼"} ${growth(t.growth).replace(/^[+−]/, "")}</span></span>
-      <span><span class="cv-name">${esc(t.label)}</span><span class="cv-meta">${t.n_posts} publicaciones · ${esc(D.stages[t.stage])}</span></span></span></button>`;
+    <span class="cv-in"><span class="cv-top"><span class="cv-rank">${t.rank}</span><span class="cv-g num ${MOM ? gClass(t.growth) : "flat"}">${pill}</span></span>
+      <span><span class="cv-name">${esc(t.label)}</span><span class="cv-meta">${meta}</span></span></span></button>`;
 }
 function renderGrid() {
-  const ts = D.topics.filter(t => stageFilter === "todos" || t.stage === stageFilter);
+  const ts = T.filter(t => stageFilter === "todos" || t.stage === stageFilter);
   const big = ts.length >= 3, rest = ts.length - (big ? 3 : 0), tail = rest % 3;
   $("#grid").innerHTML = ts.map((t, i) => {
     const last = i === ts.length - 1 && (!big || i >= 3);
     return cover(t, i === 0 && big ? "big" : last && tail === 1 ? "w3" : last && tail === 2 ? "w2" : "");
-  }).join("");
+  }).join("") || '<p class="note">Sin publicaciones de esta red en la semana.</p>';
 }
 $("#grid").addEventListener("click", e => { const c = e.target.closest(".cv"); if (c) openTopic(c.dataset.id); });
-const used = [...new Set(D.topics.map(t => t.stage))];
-$("#filters").innerHTML = [["todos", "Todos"], ...used.map(s => [s, D.stages[s]])].map(([k, v], i) => `<button class="chip" data-f="${k}" aria-pressed="${i === 0}">${esc(v)}</button>`).join("");
+function renderFilters() {
+  stageFilter = "todos";
+  const used = [...new Set(T.map(t => t.stage))];
+  $("#filters").hidden = !MOM;
+  $("#filters").innerHTML = [["todos", "Todos"], ...used.map(s => [s, D.stages[s]])].map(([k, v], i) => `<button class="chip" data-f="${k}" aria-pressed="${i === 0}">${esc(v)}</button>`).join("");
+}
 $("#filters").addEventListener("click", e => {
   const b = e.target.closest(".chip"); if (!b) return;
   stageFilter = b.dataset.f; $$("#filters .chip").forEach(x => x.setAttribute("aria-pressed", x === b)); renderGrid();
 });
-renderGrid();
+
+// Mapa: crecimiento (x) vs. utilidad para la audiencia (y)
+function renderMap() {
+  $("#map-fold").hidden = !MOM || !T.length;
+  if (!MOM || !T.length) return;
+  const W = 640, H = 380, PAD = {l: 36, r: 16, t: 20, b: 34};
+  const xMax = Math.max(0.2, ...T.map(t => Math.abs(t.growth - 1))) * 1.15;
+  const fy = T.map(t => t.fit);
+  const yMin = Math.max(0, Math.min(...fy) - 0.12), yMax = Math.min(1, Math.max(...fy) + 0.1);
+  const sx = v => PAD.l + (v + xMax) / (2 * xMax) * (W - PAD.l - PAD.r);
+  const sy = v => PAD.t + (1 - (v - yMin) / ((yMax - yMin) || 1)) * (H - PAD.t - PAD.b);
+  const maxShare = Math.max(...T.map(t => t.share)) || 1;
+  const yMid = (yMin + yMax) / 2;
+  let svg = `<line class="grid-l" x1="${sx(0)}" x2="${sx(0)}" y1="${PAD.t}" y2="${H - PAD.b}"/>` +
+    `<line class="grid-l" x1="${PAD.l}" x2="${W - PAD.r}" y1="${sy(yMid)}" y2="${sy(yMid)}"/>` +
+    `<line class="axis" x1="${PAD.l}" x2="${W - PAD.r}" y1="${H - PAD.b}" y2="${H - PAD.b}"/>` +
+    `<text class="hot" x="${W - PAD.r - 4}" y="${PAD.t + 4}" text-anchor="end">Oportunidad ↗</text>` +
+    `<text x="${sx(0)}" y="${H - PAD.b + 18}" text-anchor="middle">0%</text>` +
+    `<text x="${PAD.l}" y="${H - PAD.b + 18}">${growth(1 - xMax)}</text>` +
+    `<text x="${W - PAD.r}" y="${H - PAD.b + 18}" text-anchor="end">${growth(1 + xMax)}</text>` +
+    `<text x="10" y="${(PAD.t + H - PAD.b) / 2}" transform="rotate(-90 10 ${(PAD.t + H - PAD.b) / 2})" text-anchor="middle">más útil →</text>`;
+  [...T].sort((a, b) => b.share - a.share).forEach(t => {
+    const r = 13 + 20 * Math.sqrt(t.share / maxShare);
+    svg += `<g class="bubble" data-id="${esc(t.id)}" tabindex="0" role="button" aria-label="${esc(t.rank + ". " + t.label)}">` +
+      `<title>${esc(`${t.label} · ${growth(t.growth)} · útil ${pct(t.fit)}`)}</title>` +
+      `<circle cx="${sx(t.growth - 1)}" cy="${sy(t.fit)}" r="${r}" fill="${gradFor(t.id)[0]}"/>` +
+      `<text x="${sx(t.growth - 1)}" y="${sy(t.fit)}">${t.rank}</text></g>`;
+  });
+  $("#map").innerHTML = svg;
+}
+$("#map").addEventListener("click", e => { const g = e.target.closest(".bubble"); if (g) openTopic(g.dataset.id); });
+$("#map").addEventListener("keydown", e => { const g = e.target.closest(".bubble"); if (g && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openTopic(g.dataset.id); } });
+
+function setNet(n) {
+  net = n;
+  T = net === "todas" ? D.topics : BYP[net].topics;
+  MOM = net === "todas" || BYP[net].momentum;
+  $$("#net .chip").forEach(x => x.setAttribute("aria-pressed", x.dataset.n === net));
+  renderSub(); renderStories(); renderFilters(); renderGrid(); renderMap();
+}
+$("#net-row").hidden = !NETS.length;
+$("#net").innerHTML = [["todas", "General"], ...NETS.map(k => [k, k])].map(([k, v]) =>
+  `<button class="chip" data-n="${esc(k)}" aria-pressed="false">${k === "todas" ? "" : `<i style="background:${PCOLOR[k] || "#999"}"></i>`}${esc(v)}</button>`).join("");
+$("#net").addEventListener("click", e => {
+  const b = e.target.closest(".chip"); if (!b) return;
+  try { localStorage.setItem("radar-net", b.dataset.n); } catch (e) {}
+  setNet(b.dataset.n);
+});
+setNet(net);
 
 // Palabras que están sonando
 $("#terms").innerHTML = D.terms.length ? D.terms.map(t => `<span class="tag" title="${t.count} publicaciones de ${t.authors} autores">${esc(t.term)}${t.new ? '<span class="new">NUEVO</span>' : `<small>▲ ${t.ratio}×</small>`}</span>`).join("")
   : '<span class="note">Nada con señal suficiente esta semana.</span>';
 
-// Mapa: crecimiento (x) vs. utilidad para la audiencia (y)
-const W = 640, H = 380, PAD = {l: 36, r: 16, t: 20, b: 34};
-const xMax = Math.max(0.2, ...D.topics.map(t => Math.abs(t.growth - 1))) * 1.15;
-const fy = D.topics.map(t => t.fit);
-const yMin = Math.max(0, Math.min(...fy) - 0.12), yMax = Math.min(1, Math.max(...fy) + 0.1);
-const sx = v => PAD.l + (v + xMax) / (2 * xMax) * (W - PAD.l - PAD.r);
-const sy = v => PAD.t + (1 - (v - yMin) / ((yMax - yMin) || 1)) * (H - PAD.t - PAD.b);
-const maxShare = Math.max(...D.topics.map(t => t.share)) || 1;
-const yMid = (yMin + yMax) / 2;
-let svg = `<line class="grid-l" x1="${sx(0)}" x2="${sx(0)}" y1="${PAD.t}" y2="${H - PAD.b}"/>` +
-  `<line class="grid-l" x1="${PAD.l}" x2="${W - PAD.r}" y1="${sy(yMid)}" y2="${sy(yMid)}"/>` +
-  `<line class="axis" x1="${PAD.l}" x2="${W - PAD.r}" y1="${H - PAD.b}" y2="${H - PAD.b}"/>` +
-  `<text class="hot" x="${W - PAD.r - 4}" y="${PAD.t + 4}" text-anchor="end">Oportunidad ↗</text>` +
-  `<text x="${sx(0)}" y="${H - PAD.b + 18}" text-anchor="middle">0%</text>` +
-  `<text x="${PAD.l}" y="${H - PAD.b + 18}">${growth(1 - xMax)}</text>` +
-  `<text x="${W - PAD.r}" y="${H - PAD.b + 18}" text-anchor="end">${growth(1 + xMax)}</text>` +
-  `<text x="10" y="${(PAD.t + H - PAD.b) / 2}" transform="rotate(-90 10 ${(PAD.t + H - PAD.b) / 2})" text-anchor="middle">más útil →</text>`;
-[...D.topics].sort((a, b) => b.share - a.share).forEach(t => {
-  const r = 13 + 20 * Math.sqrt(t.share / maxShare);
-  svg += `<g class="bubble" data-id="${esc(t.id)}" tabindex="0" role="button" aria-label="${esc(t.rank + ". " + t.label)}">` +
-    `<title>${esc(`${t.label} · ${growth(t.growth)} · útil ${pct(t.fit)}`)}</title>` +
-    `<circle cx="${sx(t.growth - 1)}" cy="${sy(t.fit)}" r="${r}" fill="${gradFor(t.id)[0]}"/>` +
-    `<text x="${sx(t.growth - 1)}" y="${sy(t.fit)}">${t.rank}</text></g>`;
-});
-$("#map").innerHTML = svg;
-$("#map").addEventListener("click", e => { const g = e.target.closest(".bubble"); if (g) openTopic(g.dataset.id); });
-$("#map").addEventListener("keydown", e => { const g = e.target.closest(".bubble"); if (g && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openTopic(g.dataset.id); } });
+// La cuenta para la que se produce: qué le funciona (exportación de Meta) y sus pilares (ficha).
+const ACC = D.account || null, HANDLE = ACC?.profile?.handle || "";
+const TYPE_NAME = {reel: "Reel", carrusel: "Carrusel", imagen: "Imagen", historia: "Historia"};
+if (HANDLE) $("#acct-label").textContent = HANDLE;
+if (ACC) {
+  const pf = ACC.performance, pillars = ACC.profile?.pilares || [];
+  const list = (rows, name) => rows.length
+    ? `<ul>${rows.slice(0, 4).map(r => `<li><span>${esc(name(r))}</span><b class="num">${r.lift}×</b></li>`).join("")}</ul>`
+    : '<p class="note">Pocos posts para comparar.</p>';
+  const link = p => p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.text.slice(0, 60))}…</a>` : `<span>${esc(p.text.slice(0, 60))}…</span>`;
+  $("#acct-sect").hidden = false;
+  $("#acct-sect").innerHTML = `<h2>Lo que le funciona a ${esc(HANDLE || "la cuenta")}</h2>` + (pf
+    ? `<p>Interacción pública (me gusta y comentarios) de ${pf.n} posts propios, del ${fmtDay(pf.from)} al ${fmtDay(pf.to)}, frente a la mediana de la cuenta.${pillars.length ? ` Pilares: ${pillars.map(esc).join(" · ")}.` : ""}</p>
+      <div class="perf"><div><h3>Formatos</h3>${list(pf.by_type, r => TYPE_NAME[r.value] || r.value)}</div>
+        <div><h3>Temas</h3>${list(pf.by_topic, r => r.label)}</div>
+        <div><h3>Ganchos</h3>${list(pf.by_hook, r => r.label)}</div>
+        <div><h3>Sus mejores posts</h3><ul>${pf.top_posts.map(p => `<li>${link(p)}<b class="num">${p.lift}×</b></li>`).join("")}</ul></div></div>`
+    : `<p>${pillars.length ? `Pilares: ${pillars.map(esc).join(" · ")}. ` : ""}Importa la exportación de Meta (botón ${esc(HANDLE || "Cuenta")}) para medir qué formatos, temas y ganchos le funcionan.</p>`);
+}
+function forAccount(t, a) {
+  const pc = a.para_cuenta; if (!pc) return "";
+  const tl = ACC?.performance?.by_topic.find(r => r.value === t.id);
+  return `<div class="acct"><h4>Para ${esc(HANDLE || "la cuenta")}</h4>
+    <span class="pill">${esc(pc.pilar)}</span><span class="pill">${esc(pc.formato)}</span>${tl ? `<span class="pill">En la cuenta rinde ${tl.lift}×</span>` : ""}
+    <ol>${(pc.estructura || []).map(x => `<li>${esc(x)}</li>`).join("")}</ol>
+    <p class="cap">${esc(pc.caption)}</p><p class="cta">${esc(pc.cta)}</p>
+    <button class="copy" data-copy="${esc(`${pc.caption}\n\n${pc.cta}`)}">${svgI(ICONS.copy, 14)}Copiar caption</button></div>`;
+}
 
 // Visor de historias: un tema por historia, avanza solo; tocar a los lados para ir y volver.
 let svIdx = 0;
@@ -756,26 +947,28 @@ function openStories(i) { $("#sv").hidden = false; document.body.style.overflow 
 function closeStories() { $("#sv").hidden = true; if ($("#sheet").hidden) document.body.style.overflow = document.body.classList.contains("feed-mode") ? "hidden" : ""; }
 function showStory(i) {
   if (i < 0) i = 0;
-  if (i >= D.topics.length) return closeStories();
+  if (i >= T.length) return closeStories();
   svIdx = i;
-  const t = D.topics[i], a = t.adaptation || {}, img = THUMB[t.id];
+  const t = T[i], a = t.adaptation || {}, img = THUMB[t.id];
   $$(".story")[i]?.classList.add("seen");
   $("#sv").innerHTML = `<div class="sv-stage">
     <button class="sv-arrow prev" data-sv="-1" aria-label="${i === 0 ? "Repetir historia" : "Historia anterior"}">${svgI('<path d="M15 18l-6-6 6-6"/>', 18)}</button>
     <div class="sv-card ${img ? "photo" : ""}" style="${gradStyle(t.id)}">
     ${img ? `<img src="${img}" alt="">` : ""}
-    <div class="sv-bars">${D.topics.map((_, k) => `<i class="${k < i ? "done" : k === i ? "on" : ""}"><b></b></i>`).join("")}</div>
-    <div class="sv-head"><span class="brand-mark" aria-hidden="true"></span>Radar IA <span>${fmtDay(D.window.end)}</span>
+    <div class="sv-bars">${T.map((_, k) => `<i class="${k < i ? "done" : k === i ? "on" : ""}"><b></b></i>`).join("")}</div>
+    <div class="sv-head"><span class="brand-mark" aria-hidden="true"></span>CreativIA <span>${fmtDay(D.window.end)}</span>
       <button class="sv-x" data-sv-close aria-label="Cerrar historias">${svgI(ICONS.x, 22)}</button></div>
     <button class="sv-tap prev" data-sv="-1" aria-label="Anterior"></button><button class="sv-tap next" data-sv="1" aria-label="Siguiente"></button>
     <div class="sv-body">
       <div class="sv-kick">#${t.rank} de la semana · ${esc(D.stages[t.stage])}</div>
       <h2 class="sv-name">${esc(t.label)}</h2>
-      <div class="sv-g num">${growth(t.growth)}<small>${t.n_posts} publicaciones · útil para ${pct(t.fit)} de la audiencia</small></div>
+      <div class="sv-g num">${G(t)}<small>${t.n_posts} publicaciones · útil para ${pct(t.fit)} de la audiencia</small></div>
       ${a.ganchos?.length ? `<div class="sv-hook"><small>Idea de gancho</small>${esc(a.ganchos[0])}</div>` : ""}
+      ${a.para_cuenta ? `<div class="sv-fmt">Para ${esc(HANDLE)}: ${esc(a.para_cuenta.formato)} · ${esc(a.para_cuenta.pilar)}</div>`
+        : fmtFor(t) ? `<div class="sv-fmt">Formato para ${esc(net)}: ${esc(fmtFor(t))}</div>` : ""}
       <button class="sv-cta" data-sv-open="${esc(t.id)}">Ver ideas ${svgI('<path d="M9 18l6-6-6-6"/>', 16)}</button>
     </div></div>
-    <button class="sv-arrow next" data-sv="1" aria-label="${i === D.topics.length - 1 ? "Terminar historias" : "Historia siguiente"}">${svgI('<path d="M9 18l6-6-6-6"/>', 18)}</button></div>`;
+    <button class="sv-arrow next" data-sv="1" aria-label="${i === T.length - 1 ? "Terminar historias" : "Historia siguiente"}">${svgI('<path d="M9 18l6-6-6-6"/>', 18)}</button></div>`;
   $(".sv-bars i.on b").addEventListener("animationend", () => showStory(svIdx + 1));
 }
 $("#sv").addEventListener("click", e => {
@@ -805,23 +998,23 @@ function chart(t) {
 }
 let lastFocus = null;
 function openTopic(id) {
-  const t = D.topics.find(x => x.id === id); if (!t) return;
+  const t = [T, D.topics, ...Object.values(BYP).map(v => v.topics)].flat().find(x => x.id === id); if (!t) return;
   const a = t.adaptation || {}, img = THUMB[t.id];
   const sigs = t.signals.length ? `<div class="sigs">${t.signals.map(s =>
-      `<div class="sig" title="${esc(s.hint)}"><span>${esc(s.kind)}: <b>${esc(s.value)}</b></span><span class="lift num">${s.lift}× más interacción</span></div>`).join("")}</div>`
+      `<div class="sig" title="${esc(s.hint)}"><span>${esc(s.kind)}: <b>${esc(s.value)}</b></span><span class="lift num">${s.lift}× más interacción${s.n < 5 ? ` · débil (${s.n} piezas)` : ""}</span></div>`).join("")}</div>`
     : `<p class="note">Pocas publicaciones con interacción medible para este tema.</p>`;
   $("#detail").setAttribute("style", gradStyle(t.id));
   $("#detail").innerHTML = `
     <div class="p-cover ${img ? "photo" : ""}">${img ? `<img src="${img}" alt="">` : ""}
       <div class="k">#${t.rank} de la semana</div><h2>${esc(t.label)}</h2>
-      <div class="big-g num">${growth(t.growth)}</div></div>
+      <div class="big-g num">${G(t)}</div></div>
     <div class="p-side">
       <div class="p-head"><span class="p-av"><i></i></span><div><b>${esc(hashtag(t.label))}</b><small><span class="stage" style="--c:${stageVar(t.stage)}">${esc(D.stages[t.stage])}</span> · ${t.n_posts} publicaciones</small></div>
         <button class="x" data-close aria-label="Cerrar">${svgI(ICONS.x, 20)}</button></div>
       <div class="p-body">
         <p class="p-desc">${esc(t.description)}</p>
         <div class="stats">
-          <div class="stat"><b class="num g ${gClass(t.growth)}">${growth(t.growth)}</b><span>crecimiento</span></div>
+          <div class="stat"><b class="num g ${MOM ? gClass(t.growth) : "flat"}">${G(t)}</b><span>crecimiento</span></div>
           <div class="stat"><b class="num">${pct(t.share)}</b><span>de la conversación</span></div>
           <div class="stat"><b class="num">${pct(t.fit)}</b><span>útil para la audiencia</span></div>
           <div class="stat"><b class="num">${pct(t.practical)}</b><span>se puede aplicar</span></div>
@@ -833,18 +1026,20 @@ function openTopic(id) {
           <button class="ptab" role="tab" data-p="refs" aria-selected="false">Ejemplos</button>
         </div>
         <div class="ppanel" data-p="adapt">
+          ${forAccount(t, a)}
           <p class="lead">${esc(a.angulo)}</p>
           <h4>Ganchos</h4>
           <div class="hooks">${(a.ganchos || []).map(h => `<div class="hook"><p>${esc(h)}</p><button class="copy" data-copy="${esc(h)}">${svgI(ICONS.copy, 14)}Copiar</button></div>`).join("")}</div>
-          <h4>Formato por red</h4>
-          <div class="fmts">${Object.entries(a.formatos || {}).map(([k, v]) => { const name = NAMES[k] || k;
-            return `<div class="fmt"><i style="background:${PCOLOR[name] || "#999"}"></i><b>${esc(name)}</b><span>${esc(v)}</span></div>`; }).join("")}</div>
+          <h4>${fmtFor(t) ? `Formato para ${esc(net)}` : "Formato por red"}</h4>
+          <div class="fmts">${Object.entries(a.formatos || {}).sort((x, y) => (y[0] === FMT_KEY[net]) - (x[0] === FMT_KEY[net])).map(([k, v]) => { const name = NAMES[k] || k;
+            const cls = !FMT_KEY[net] ? "" : k === FMT_KEY[net] ? "on" : "dim";
+            return `<div class="fmt ${cls}"><i style="background:${PCOLOR[name] || "#999"}"></i><b>${esc(name)}</b><span>${esc(v)}</span></div>`; }).join("")}</div>
           ${a.cuidado ? `<div class="careful">${esc(a.cuidado)}</div>` : ""}
         </div>
         <div class="ppanel" data-p="why" hidden>
           <p class="lead">${esc(a.por_que_funciona)}</p>
           ${sigs}
-          <p class="note">${t.publishers.length ? `Publican sobre todo: ${esc(t.publishers.join(", "))}. ` : ""}${Math.round(t.lang_es * 100)}% en español. Son pistas sacadas de la muestra, no una regla.</p>
+          <p class="note">${net === "todas" ? "" : `Calculado solo con noticias y publicaciones sobre ${esc(net)}. `}${t.publishers.length ? `Publican sobre todo: ${esc(t.publishers.join(", "))}. ` : ""}${Math.round(t.lang_es * 100)}% en español. Son pistas sacadas de la muestra, no una regla.</p>
         </div>
         <div class="ppanel" data-p="refs" hidden>
           <ul class="refs">${t.examples.map(p => `<li><a href="${esc(p.url)}" target="_blank" rel="noopener"><div class="m"><i style="background:${PCOLOR[p.platform] || "#999"}"></i>${esc(p.platform)}${p.date ? ` · ${fmtDay(p.date)}` : ""}</div><p>${esc(p.text)}</p></a></li>`).join("") || '<li class="note">Sin ejemplos.</li>'}</ul>
@@ -892,7 +1087,8 @@ function fallback(text, done) {
 const W8 = Object.entries(D.weights).map(([k, v]) => `${k.replace("_", " ")} ${Math.round(v * 100)}%`).join(", ");
 $("#method").innerHTML = [
   "Cada día se toman las publicaciones con más interacción por consulta y red, para comparar de qué se habla y no cuánto se publica.",
-  "Jev (TypeSafe) clasifica cada publicación: tema, gancho, formato, quién publica y qué tan útil es para ejecutivos y equipos de LatAm.",
+  `${mode === "jev" ? "Jev (TypeSafe)" : mode === "local" ? "Un clasificador local multilingüe" : "Un clasificador por palabras clave"} clasifica cada publicación: tema, gancho, formato, quién publica y qué tan útil es para ejecutivos y equipos de LatAm.`,
+  "Las pestañas por app (LinkedIn, Instagram, TikTok, YouTube) repiten el cálculo con noticias y artículos sobre IA en esa app, buscados día por día en Google News, más los aportes de la comunidad y, en YouTube, los videos. Esas noticias no entran en la vista General.",
   `Un tema crece cuando su porcentaje de la conversación sube frente a las semanas anteriores (redes usadas: ${esc(C.momentum_platforms.join(", ") || "—")}).`,
   "«Por qué funciona» compara la interacción de cada publicación con la típica de su red, agrupada por gancho, formato y hora (Bogotá).",
   `Orden del ranking: ${esc(W8)}, con un extra por llegar temprano y un descuento por humo.`,
@@ -930,7 +1126,7 @@ $("#method").insertAdjacentHTML("beforeend", [
 $("#foot").textContent = `Generado ${D.meta.generated} · ` + Object.entries(C.by_platform).map(([k, v]) => `${k} ${v}`).join(" · ");
 
 // Feed vertical
-const adaptable = new Set(D.topics.map(t => t.id));
+const adaptable = new Set([D.topics, ...Object.values(BYP).map(v => v.topics)].flat().map(t => t.id));
 let saved = new Set();
 try { saved = new Set(JSON.parse(localStorage.getItem("radar-saved") || "[]")); } catch (e) {}
 const persist = () => { try { localStorage.setItem("radar-saved", JSON.stringify([...saved])); } catch (e) {} };
@@ -1039,7 +1235,7 @@ $(".seg").addEventListener("click", e => { const b = e.target.closest("button");
 
 const start = decodeURIComponent(location.hash.slice(1));
 if (start === "feed") setView("feed");
-else if (D.topics.some(t => t.id === start)) openTopic(start);
+else if ([T, D.topics].flat().some(t => t.id === start)) openTopic(start);
 })();
 </script>
 </body></html>"""
@@ -1075,7 +1271,9 @@ def write_outputs(result: dict, adaptations: dict, meta: dict, out_dir: Path, n:
     paths = {"html": out_dir / f"radar-{stamp}.html", "md": out_dir / f"radar-{stamp}.md", "json": out_dir / f"radar-{stamp}.json"}
     paths["html"].write_text(render_html(result, adaptations, meta, n, latest_backtest(out_dir)), encoding="utf-8")
     paths["md"].write_text(render_markdown(result, adaptations, meta, n), encoding="utf-8")
-    serializable = {**result, "topics": [{**t, "examples": [p.to_dict() for p in t["examples"]]} for t in result["topics"]],
+    plain = lambda ts: [{**t, "examples": [p.to_dict() for p in t["examples"]]} for t in ts]
+    serializable = {**result, "topics": plain(result["topics"]),
+                    "by_app": {k: {**v, "topics": plain(v["topics"])} for k, v in result.get("by_app", {}).items()},
                     "adaptations": adaptations, "meta": meta}
     paths["json"].write_text(json.dumps(serializable, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     return paths
