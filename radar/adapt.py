@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import date
 
 from . import analysis, config
 
@@ -120,9 +121,14 @@ español neutro latinoamericano:
 - formatos: una recomendación de formato por plataforma, en una frase corta (máximo 15 palabras).
 - cuidado: un riesgo o matiz a evitar (humo, tecnicismo, tendencia ya saturada, etc.).
 Sé específico; evita generalidades que servirían para cualquier tema.
-No inventes cifras, porcentajes, estudios, empresas ni citas: usa solo los datos que recibes. Si un
-gancho necesita un dato que no tienes, escribe [dato por verificar] en su lugar.
-Escribe todo en español (carrusel, no carousel) y nunca copies identificadores internos con guiones bajos."""
+No inventes cifras, porcentajes, estudios, encuestas, informes, conferencias, leyes, fechas de entrada
+en vigor, empresas, productos ni citas: usa solo los datos y ejemplos que recibes. Tampoco presentes
+como hecho algo que no está en los ejemplos ("acaba de salir", "un estudio reciente muestra", "los chips
+están escaseando"). Si un gancho necesita un dato que no tienes, escribe [dato por verificar] en su lugar.
+Cuando el ángulo proponga algo que no está en la evidencia, plantéalo como idea o pregunta, no como hecho.
+Escribe todo en español neutro: tutea (tú, no vos ni usted), sin palabras en inglés cuando hay una en
+español (carrusel, no carousel; implementar, no deployar) y nunca copies identificadores internos con
+guiones bajos. Cuida los datos culturales (fiestas, leyes y costumbres de cada país)."""
 
 ACCOUNT_RULES = """
 Además, para cada tema escribe para_cuenta: la pieza concreta para la cuenta descrita abajo.
@@ -136,7 +142,8 @@ Además, para cada tema escribe para_cuenta: la pieza concreta para la cuenta de
 
 
 def system_prompt(account_ctx: str = "") -> str:
-    return SYSTEM + (ACCOUNT_RULES + "\n" + account_ctx if account_ctx else "")
+    today = f"\nHoy es {date.today().isoformat()}: no escribas años pasados como si fueran actuales."
+    return SYSTEM + today + (ACCOUNT_RULES + "\n" + account_ctx if account_ctx else "")
 
 
 def _with_claude(topics: list[dict], system: str) -> dict[str, dict]:

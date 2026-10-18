@@ -417,3 +417,23 @@ class TestPublicMode(unittest.TestCase):
         cookie = headers["Set-Cookie"].split(";")[0]
         self.assertEqual(self.request("/", cookie=cookie)[0], 200)
         self.assertEqual(self.request("/api/status", cookie=cookie)[0], 200)
+
+
+class TestEvaluationRound2(unittest.TestCase):
+    def test_dates_and_percentages_are_not_phones(self):
+        self.assertEqual(scrub("R+AI: Nov 18 - 19 2026 100% online"), "R+AI: Nov 18 - 19 2026 100% online")
+        self.assertIn("[teléfono]", scrub("Llámame al +57 300 123 4567"))
+
+    def test_adult_content_is_dropped(self):
+        self.assertTrue(sources.ADULT.search("#nfsw #ai #ia"))
+        self.assertFalse(sources.ADULT.search("Agentes de IA para equipos de ventas"))
+
+    def test_prompt_has_today_and_forbids_invented_studies(self):
+        from radar import adapt
+        prompt = adapt.system_prompt()
+        self.assertIn(f"Hoy es {date.today().isoformat()}", prompt)
+        self.assertIn("encuestas", prompt)
+
+    def test_news_about_deepfakes_is_kept(self):
+        self.assertFalse(sources.ADULT.search("Eurodiputadas víctimas de pornografía falsa hecha con IA"))
+        self.assertFalse(sources.ADULT.search("XXX Congreso Hispanoamericano de la Prensa"))

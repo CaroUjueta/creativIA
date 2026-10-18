@@ -20,11 +20,18 @@ def anonymize_author(raw_id: str) -> str:
     return hashlib.sha256(f"{_SALT}:{raw_id}".encode()).hexdigest()[:12]
 
 
+def _phone(m: re.Match) -> str:
+    """8 dígitos o más y sin "%" detrás: así no se tapan fechas cortas ni cifras como "2026 100%"."""
+    if m.string[m.end():m.end() + 1] == "%" or sum(c.isdigit() for c in m.group()) < 8:
+        return m.group()
+    return "[teléfono]"
+
+
 def scrub(text: str) -> str:
     """Quita menciones, correos y teléfonos del texto antes de guardarlo o enviarlo a un modelo."""
     text = _EMAIL.sub("[correo]", text)
     text = _MENTION.sub("@usuario", text)
-    text = _PHONE.sub("[teléfono]", text)
+    text = _PHONE.sub(_phone, text)
     return re.sub(r"\s+", " ", text).strip()
 
 
