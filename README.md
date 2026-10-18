@@ -6,6 +6,10 @@ Prototipo desarrollado en el **Hackatón 30X** · Área **Media** · Reto: *Expl
 
 ![Python](https://img.shields.io/badge/python-3.12+-blue) ![Estado](https://img.shields.io/badge/estado-prototipo-orange)
 
+> 📄 **Documento de investigación y planteamiento:** [léelo aquí](docs/documento-investigacion.md) · [descarga el Word](docs/CreativIA%20-%20hackathon.docx)
+>
+> Marco teórico, acceso a cada red, planteamiento del problema, antecedentes, estrategia de solución, las tres rondas de pruebas, conclusiones y bibliografía. Por Mariana Amaya Ramos, Valentina Garzón Peña y Carolina Ujueta Ricardo.
+
 ---
 
 ## Tabla de contenidos
@@ -21,6 +25,7 @@ Prototipo desarrollado en el **Hackatón 30X** · Área **Media** · Reto: *Expl
 10. [Datos, privacidad y términos de servicio](#datos-privacidad-y-términos-de-servicio)
 11. [Alcance y limitaciones](#alcance-y-limitaciones)
 12. [Próximos pasos](#próximos-pasos)
+13. [Documento de investigación](docs/documento-investigacion.md)
 
 ---
 
@@ -55,6 +60,8 @@ Por último, un **modelo de pesos abiertos vía OpenRouter** redacta para cada t
 > **"¿Cuáles son los 10 temas de IA que más están creciendo esta semana, por qué, y cómo los adaptamos para nuestra audiencia?"**
 
 ## Cómo funciona
+
+![Diagrama de proceso de creativIA](docs/img/solucionCreativIA.jpeg)
 
 ```
 Bluesky · Hacker News · YouTube (API o RSS) · Google News RSS · aportes de la comunidad
