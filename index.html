@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CreativIA</title>
+<meta name="description" content="CreativIA · Radar de contenido sobre IA para el Reto 30X">
+<link rel="icon" href="logo.png">
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--ink:#16161a;--muted:#6b6b76;--line:#e4e2dc;--accent:#5b4bff}
+@media (prefers-color-scheme:dark){:root{--bg:#121216;--card:#1c1c22;--ink:#f2f2f5;--muted:#a0a0ac;--line:#2e2e36}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);
+  font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px;width:100%;max-width:380px;text-align:center}
+img{width:56px;height:56px;object-fit:contain}
+h1{font-size:22px;margin:8px 0 4px}
+p{color:var(--muted);margin:0 0 16px;font-size:14px}
+.spin{width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;
+  margin:0 auto 14px;animation:r 0.8s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+a{display:inline-block;padding:10px 18px;border-radius:10px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}
+</style>
+</head>
+<body>
+<div class="card">
+  <img src="logo.png" alt="">
+  <h1>CreativIA</h1>
+  <p id="msg">Radar de contenido · Reto 30X<br>Abriendo la app…</p>
+  <div class="spin" id="spin"></div>
+  <a id="go" href="#" hidden>Abrir CreativIA</a>
+</div>
+<script>
+// La app corre en el computador del equipo detrás de un túnel; url.txt tiene la dirección del día.
+fetch("url.txt?t=" + Date.now(), {cache: "no-store"})
+  .then(r => r.text())
+  .then(t => {
+    const url = t.trim();
+    if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(url)) throw new Error();
+    const go = document.getElementById("go");
+    go.href = url; go.hidden = false;
+    location.replace(url);
+  })
+  .catch(() => {
+    document.getElementById("spin").hidden = true;
+    document.getElementById("msg").textContent = "La app no está disponible en este momento. Intenta de nuevo en unos minutos.";
+  });
+</script>
+</body>
+</html>
