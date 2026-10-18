@@ -179,6 +179,28 @@ class TestJevFallback(unittest.TestCase):
             stats = classify.classify(posts, use_jev=True)
         self.assertEqual(stats["classifier"], "heuristico")
         self.assertIn("Key limit", stats["jev_error"])
+
+    def test_tries_next_provider_before_falling_back(self):
+        import os
+        from unittest import mock
+
+        from radar import classify
+
+        async def first_fails(posts, concurrency):
+            if classify.jev_provider() == "digitalocean":
+                raise classify.JevUnavailable("403 not available for your subscription tier")
+            for p in posts:
+                p.labels = {"classifier": "jev"}
+            return 10
+
+        posts = [Post(id="provider-test", platform="bluesky", url="", text="x", created_at=END, author_hash="a")]
+        with mock.patch.dict(os.environ, {"MODEL_ACCESS_KEY": "a", "OPENROUTER_API_KEY": "b"}), \
+             mock.patch.object(classify, "_classify_jev", first_fails), \
+             mock.patch.object(classify, "_load_cache", lambda: {}), \
+             mock.patch.object(classify, "_append_cache", lambda ps: None):
+            stats = classify.classify(posts, use_jev=True)
+            self.assertEqual(classify.jev_provider(), "openrouter")
+        self.assertEqual((stats["classifier"], stats["input_tokens"]), ("jev", 10))
         self.assertTrue(all(p.labels for p in posts))
 
 
@@ -224,6 +246,34 @@ class TestZenAdapter(unittest.TestCase):
             out = adapt._with_zen(topics)
         self.assertEqual(out[topics[0]["id"]]["angulo"], "y")
         self.assertIn(topics[1]["id"], out)  # completado con plantilla
+
+
+class TestOpenRouterWriter(unittest.TestCase):
+    def test_falls_back_to_free_open_model(self):
+        import json
+        import os
+        from unittest import mock
+
+        import httpx
+
+        from radar import adapt
+
+        topics = analysis.analyze(make_posts(), START, END)["topics"][:1]
+        item = {"topic_id": topics[0]["id"], "por_que_funciona": "x", "angulo": "y", "ganchos": ["a", "b", "c"],
+                "formatos": {"linkedin": "1", "instagram": "2", "tiktok": "3", "youtube": "4"}, "cuidado": "z"}
+
+        def handler(req):
+            model = json.loads(req.content)["model"]
+            if model == adapt.OPENROUTER_MODELS[0]:
+                return httpx.Response(403, json={"error": {"message": "Key limit exceeded"}})
+            return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"temas": [item]})}}]})
+
+        real_client = httpx.Client
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "test"}), \
+             mock.patch("httpx.Client", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw)):
+            out, adapter = adapt.adapt(topics, use_llm=True)
+        self.assertEqual(adapter, f"openrouter ({adapt.OPENROUTER_MODELS[1]})")
+        self.assertEqual(out[topics[0]["id"]]["angulo"], "y")
 
 
 if __name__ == "__main__":

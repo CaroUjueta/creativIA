@@ -1,8 +1,8 @@
 """Recomendación de adaptación: "¿cómo lo convertimos en contenido para nuestra audiencia?".
 
-Jev decide y clasifica, pero no genera texto. Para redactar el ángulo y los ganchos se usa
-Claude (si hay ANTHROPIC_API_KEY o un perfil de `ant auth login`), con las señales que ya
-calculamos como evidencia. Sin Claude, se arma una recomendación con plantillas.
+Jev decide y clasifica, pero no genera texto. Para redactar el ángulo y los ganchos se usa un
+modelo de pesos abiertos vía OpenRouter (la misma OPENROUTER_API_KEY de Jev), con las señales que
+ya calculamos como evidencia. Alternativas: Claude, OpenCode Zen y, sin ninguno, plantillas.
 """
 
 from __future__ import annotations
@@ -104,7 +104,9 @@ español neutro latinoamericano:
 - ganchos: 3 primeras líneas distintas listas para usar.
 - formatos: una recomendación de formato por plataforma.
 - cuidado: un riesgo o matiz a evitar (humo, tecnicismo, tendencia ya saturada, etc.).
-Sé específico; evita generalidades que servirían para cualquier tema."""
+Sé específico; evita generalidades que servirían para cualquier tema.
+No inventes cifras, porcentajes, estudios, empresas ni citas: usa solo los datos que recibes. Si un
+gancho necesita un dato que no tienes, escribe [dato por verificar] en su lugar."""
 
 
 def _with_claude(topics: list[dict]) -> dict[str, dict]:
@@ -190,24 +192,25 @@ def _valid(item: dict) -> bool:
             and isinstance(item["formatos"], dict))
 
 
-def _with_zen(topics: list[dict]) -> dict[str, dict]:
-    """Redacción con un modelo de OpenCode Zen (API compatible con OpenAI)."""
+def _with_chat(topics: list[dict], url: str, api_key: str, model: str, name: str, extra: dict | None = None) -> dict[str, dict]:
+    """Redacción con un modelo vía una API compatible con OpenAI (OpenRouter u OpenCode Zen)."""
     import httpx
 
     body = {
-        "model": ZEN_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM + "\n" + ZEN_FORMAT},
             {"role": "user", "content": json.dumps(_evidence(topics), ensure_ascii=False)},
         ],
         "response_format": {"type": "json_object"},
+        **(extra or {}),
     }
-    headers = {"Authorization": f"Bearer {os.environ['OPENCODE_API_KEY']}"}
-    with httpx.Client(timeout=180) as client:
-        r = client.post(ZEN_URL, json=body, headers=headers)
+    headers = {"Authorization": f"Bearer {api_key}", "X-Title": "Radar de contenido IA"}
+    with httpx.Client(timeout=300) as client:
+        r = client.post(url, json=body, headers=headers)
         if r.status_code == 400:  # no todos los modelos aceptan response_format
             body.pop("response_format")
-            r = client.post(ZEN_URL, json=body, headers=headers)
+            r = client.post(url, json=body, headers=headers)
         r.raise_for_status()
     content = r.json()["choices"][0]["message"]["content"]
     items = [t for t in _parse_json(content).get("temas", []) if isinstance(t, dict) and _valid(t)]
@@ -217,9 +220,35 @@ def _with_zen(topics: list[dict]) -> dict[str, dict]:
     if len(missing) == len(topics):
         raise RuntimeError("la respuesta no trajo temas válidos")
     if missing:
-        log.warning("Zen omitió %d temas; se completan con plantillas.", len(missing))
+        log.warning("%s omitió %d temas; se completan con plantillas.", name, len(missing))
         out.update(_with_templates(missing))
     return out
+
+
+def _with_zen(topics: list[dict]) -> dict[str, dict]:
+    return _with_chat(topics, ZEN_URL, os.environ["OPENCODE_API_KEY"], ZEN_MODEL, "Zen")
+
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Modelos de pesos abiertos, en orden. Primero Nemotron 3 Super de NVIDIA, gratis (con límite de uso
+# diario), para que el saldo se use solo en Jev. Si está saturado, DeepSeek V4.1 Flash: US$0,055 / 0,144
+# por millón de tokens de entrada / salida, menos de un centavo por reporte. Lista: https://openrouter.ai/models
+OPENROUTER_MODELS = [m.strip() for m in os.environ.get(
+    "RADAR_WRITER_MODELS", "nvidia/nemotron-3-super-120b-a12b:free,deepseek/deepseek-v4.1-flash").split(",") if m.strip()]
+
+
+def _with_openrouter(topics: list[dict]) -> tuple[dict[str, dict], str]:
+    errors = []
+    for model in OPENROUTER_MODELS:
+        try:
+            # Esfuerzo de razonamiento bajo: es redacción, no un problema difícil, y así responde rápido.
+            out = _with_chat(topics, OPENROUTER_URL, os.environ["OPENROUTER_API_KEY"], model, model,
+                             {"reasoning": {"effort": "low"}, "max_tokens": 16000})
+            return out, model
+        except Exception as e:
+            log.warning("OpenRouter no pudo redactar con %s (%s).", model, str(e)[:160])
+            errors.append(model)
+    raise RuntimeError(f"ningún modelo respondió ({', '.join(errors)})")
 
 
 def has_claude_credentials() -> bool:
@@ -228,7 +257,13 @@ def has_claude_credentials() -> bool:
 
 
 def adapt(topics: list[dict], use_llm: bool) -> tuple[dict[str, dict], str]:
-    """Redacta con Claude si hay credenciales, si no con Zen, y si no con plantillas."""
+    """Redacta con un modelo open source vía OpenRouter; si no, Claude, Zen o plantillas."""
+    if use_llm and os.environ.get("OPENROUTER_API_KEY"):
+        try:
+            out, model = _with_openrouter(topics)
+            return out, f"openrouter ({model})"
+        except Exception as e:
+            log.warning("No se pudo redactar con OpenRouter (%s).", e)
     if use_llm and has_claude_credentials():
         try:
             return _with_claude(topics), f"claude ({CLAUDE_MODEL})"
