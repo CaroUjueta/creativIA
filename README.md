@@ -205,6 +205,24 @@ En la app, el botón con el nombre de la cuenta abre dos cosas:
 
 Con la ficha, cada tendencia trae una pieza **«Para @crece30x»**: pilar, formato (reel, carrusel o historia, priorizando lo que le funciona a la cuenta), estructura por láminas o momentos, caption y llamado a la acción. Ambos archivos están en `.gitignore` y se aplican en la siguiente actualización del radar.
 
+### Publicarla en internet
+
+**Render (gratis, la que usa la demo):** `render.yaml` crea el servicio con `render.Dockerfile`. En render.com → *New → Blueprint* se elige este repositorio y se pega `OPENROUTER_API_KEY` cuando lo pide. Arranca con el último reporte del equipo (`demo/`) y queda abierta sin contraseña para los jurados. Como el plan gratis tiene 512 MB, esa versión no trae el clasificador local (~780 MB): si se actualiza en línea, clasifica por palabras clave. Se duerme tras 15 minutos sin visitas; un monitor gratuito (p. ej. UptimeRobot cada 5 minutos a `/api/status`) la mantiene despierta.
+
+**Desde este computador:** `bash scripts/publicar_tunel.sh [--sin-clave]` abre un túnel gratuito de Cloudflare con la app completa mientras el computador esté prendido (la URL cambia cada vez).
+
+**Hugging Face Spaces (requiere PRO):** la app completa (Actualizar, Aportar y Cuenta) corre en un Space de Hugging Face con Docker (CPU gratis, 16 GB de RAM). Con `HF_TOKEN` (token con permiso de escritura) y `RADAR_PASSWORD` en el `.env`:
+
+```bash
+.venv/bin/python scripts/publicar_hf.py
+```
+
+El script crea el Space `usuario/creativia`, guarda las claves como secretos del Space (nunca en el código) y sube los reportes y datos a un dataset **privado** `usuario/creativia-datos`. En línea:
+
+- **Contraseña:** sin `RADAR_PASSWORD` nadie ve el tablero, ni puede actualizar el radar o escribir aportes y datos de la cuenta. En el computador (127.0.0.1) no se pide.
+- **Datos que no se pierden:** el disco del Space se borra al reiniciarse; la app recupera `data/` y `out/` del dataset privado al arrancar y los vuelve a subir después de cada actualización, aporte o cambio en la cuenta.
+- El Space se duerme tras 48 horas sin visitas y despierta solo al abrirlo (1–2 minutos).
+
 ## ¿Acierta el radar? (backtest)
 
 ```bash

@@ -369,3 +369,51 @@ class TestEvaluationFixes(unittest.TestCase):
     def test_checker_ignores_durations(self):
         from radar import evaluate
         self.assertEqual(evaluate.DURATION.sub(" ", "Video de 60 segundos, carrusel de 6–8 láminas").count("60"), 0)
+
+
+class TestPublicMode(unittest.TestCase):
+    """La app publicada: sin la contraseña no se ve el tablero ni se puede actualizar ni escribir."""
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        from http.server import ThreadingHTTPServer
+        from radar import pipeline, web
+        cls.tmp = tempfile.TemporaryDirectory()
+        runner = web.Runner(pipeline.Options(out=Path(cls.tmp.name), community=Path(cls.tmp.name) / "c.csv"))
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), web.make_handler(runner, "clave-de-prueba"))
+        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.tmp.cleanup()
+
+    def request(self, path, data=None, cookie=""):
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(self.base + path, data=data, headers={"Cookie": cookie} if cookie else {})
+        opener = urllib.request.build_opener(type("NoRedirect", (urllib.request.HTTPRedirectHandler,), {"redirect_request": lambda *a: None}))
+        try:
+            r = opener.open(req)
+        except urllib.error.HTTPError as e:
+            r = e
+        return r.status, r.headers, r.read().decode()
+
+    def test_without_password_everything_is_closed(self):
+        self.assertEqual(self.request("/")[1]["Location"], "/login")
+        self.assertEqual(self.request("/api/account")[0], 401)
+        self.assertEqual(self.request("/api/run", b"")[0], 401)
+
+    def test_wrong_password_is_rejected(self):
+        status, headers, _ = self.request("/login", b"password=otra")
+        self.assertEqual(status, 401)
+        self.assertIsNone(headers["Set-Cookie"])
+
+    def test_right_password_opens_the_app(self):
+        status, headers, _ = self.request("/login", b"password=clave-de-prueba")
+        self.assertEqual(status, 303)
+        cookie = headers["Set-Cookie"].split(";")[0]
+        self.assertEqual(self.request("/", cookie=cookie)[0], 200)
+        self.assertEqual(self.request("/api/status", cookie=cookie)[0], 200)

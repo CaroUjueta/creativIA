@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: creativia
+    runtime: docker
+    dockerfilePath: ./render.Dockerfile
+    plan: free
+    healthCheckPath: /api/status
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false

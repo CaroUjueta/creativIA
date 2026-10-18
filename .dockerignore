@@ -1,0 +1,9 @@
+.env
+.venv
+.git
+out
+data/cache
+data/comunidad.csv
+data/cuenta.json
+data/cuenta_metricas.csv
+__pycache__
