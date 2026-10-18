@@ -1,4 +1,4 @@
-# creativIA · Radar de contenido
+# CreativIA · Radar de contenido
 
 > De "qué está de moda" a "qué debemos producir, por qué y para quién".
 
