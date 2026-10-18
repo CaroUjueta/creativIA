@@ -168,9 +168,6 @@ button{font:inherit;color:inherit}
 .hist{background:var(--s2);color:var(--ink);border:0;border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;font-weight:600}
 .run-btn{display:inline-flex;align-items:center;gap:6px;background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer}
 .run-btn:hover{background:#1877f2}
-.mode{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted);padding:6px 4px}
-.mode i{width:7px;height:7px;border-radius:50%;background:var(--up)}
-.mode.local i{background:#f5a623}.mode.heuristico i{background:var(--pink)}
 
 /* Pestañas y chips compartidos */
 .tabs-top{display:flex;justify-content:center;gap:24px;padding:14px 16px 4px}
@@ -481,7 +478,7 @@ body:not(.feed-mode) .tk-nav{display:none}
 
 @media (max-width:735px){
   .bar-in{padding:8px 12px}
-  .run-label,.mode span,.brand-name{display:none}
+  .run-label,.brand-name{display:none}
   .hist{max-width:112px}
   .run-btn{padding:9px 11px}
   .stories{gap:12px;padding-top:14px}
@@ -517,8 +514,7 @@ body:not(.feed-mode) .tk-nav{display:none}
   <div class="actions"><select class="hist" id="hist" aria-label="Reportes anteriores" hidden></select>
     <button class="add-btn" id="add" aria-label="Aportar una publicación" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="run-label">Aportar</span></button>
     <button class="add-btn" id="acct-btn" aria-label="Cuenta para la que se produce" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="run-label" id="acct-label">Cuenta</span></button>
-    <button class="run-btn" id="run" aria-label="Actualizar radar" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg><span class="run-label">Actualizar</span></button>
-    <span class="mode" id="mode"><i></i><span></span></span></div>
+    <button class="run-btn" id="run" aria-label="Actualizar radar" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg><span class="run-label">Actualizar</span></button></div>
 </div></header>
 
 <main>
@@ -772,7 +768,7 @@ if (APP) {
   fetch("/api/status").then(r => r.json()).then(st => { if (st.state === "running") poll(); });
 }
 if (!D) {
-  $$(".view,.seg,#mode").forEach(el => el.remove());
+  $$(".view,.seg").forEach(el => el.remove());
   $("#empty").hidden = false;
   if (!APP) $("[data-run]").replaceWith(Object.assign(document.createElement("code"), {textContent: "python -m radar.web"}));
   return;
@@ -780,9 +776,6 @@ if (!D) {
 
 const C = D.counts, mode = D.meta.classifier;
 const FEED = D.feed || [];
-$("#mode").classList.add(mode);
-$("#mode span").textContent = {jev: "Jev", local: "Modo local", heuristico: "Modo básico"}[mode] || mode;
-$("#mode").title = mode === "jev" ? "Clasificado con Jev" : D.meta.jev_error ? `Jev no respondió (${D.meta.jev_error}); se usó el respaldo` : "Sin clave de Jev: resultados aproximados";
 // Pestañas por app: "General" usa el cálculo de siempre; cada app tiene su propio ranking y
 // crecimiento, calculados con noticias y artículos sobre IA en esa app (analysis.by_app).
 const BYP = D.by_app || {};
@@ -798,8 +791,7 @@ const G = t => MOM ? growth(t.growth) : "—";
 function renderSub() {
   const warn = txt => ` · <b>●</b> ${txt}`;
   if (net === "todas") {
-    $("#sub").innerHTML = `${fmtDay(D.window.split)} – ${fmtDay(D.window.end)} · ${C.ai.toLocaleString("es")} publicaciones · ${Object.keys(C.by_platform).length} fuentes` +
-      (mode === "jev" ? "" : warn("sin Jev, números aproximados"));
+    $("#sub").innerHTML = `${fmtDay(D.window.split)} – ${fmtDay(D.window.end)} · ${C.ai.toLocaleString("es")} publicaciones · ${Object.keys(C.by_platform).length} fuentes`;
     return;
   }
   const v = BYP[net];
