@@ -25,7 +25,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import analysis, config
-from .models import Post
+from .models import Post, _phone
 
 OUT = Path("out")
 SHEETS = OUT / "evaluacion"
@@ -114,7 +114,8 @@ def privacy(posts: list[Post]) -> list[str]:
     examples = []
     for p in posts:
         for kind, rx in LEAKS.items():
-            m = rx.search(p.text)
+            # Mismo criterio que el limpiador: cifras con "%" detrás o de menos de 8 dígitos no son teléfonos.
+            m = next((m for m in rx.finditer(p.text) if kind != "teléfono" or _phone(m) != m.group()), None)
             if m:
                 hits[kind] += 1
                 if len(examples) < 5:

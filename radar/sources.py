@@ -18,6 +18,7 @@ import asyncio
 import csv
 import logging
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -337,6 +338,11 @@ def count_community(path: Path) -> int:
         return sum(1 for _ in csv.DictReader(f))
 
 
+# Contenido para adultos: no sirve para una marca educativa y no debe quedar en los reportes.
+# Solo etiquetas y marcas explícitas: las noticias sobre deepfakes pornográficos sí son pertinentes.
+ADULT = re.compile(r"(#?\bn[sf]{2}w\b|#porn\w*|\bonlyfans\b|#?\bhentai\b|#?\brule34\b|#xxx\b|#\+18\b)", re.I)
+
+
 async def collect(start: datetime, end: datetime, platforms: set[str], per_day: int,
                   community: Path | None = None) -> list[Post]:
     last_stats.clear()
@@ -365,10 +371,11 @@ async def collect(start: datetime, end: datetime, platforms: set[str], per_day: 
 
     seen, unique = set(), []
     for p in posts:
-        if p.id not in seen and p.text:
+        if p.id not in seen and p.text and not ADULT.search(p.text):
             seen.add(p.id)
             unique.append(p)
     last_stats.update(by_job={name: len(batch) for name, batch in zip(jobs, results)}, raw=len(posts),
                       duplicates=len(posts) - len({p.id for p in posts}), empty_text=sum(1 for p in posts if not p.text),
+                      adult=sum(1 for p in posts if p.text and ADULT.search(p.text)),
                       unique=len(unique), seconds=round(time.monotonic() - t0, 1))
     return unique
