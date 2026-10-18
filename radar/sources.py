@@ -18,10 +18,13 @@ import asyncio
 import csv
 import logging
 import os
+import time
 import xml.etree.ElementTree as ET
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -46,8 +49,14 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Estadísticas de la última recolección (consultas que respondieron o fallaron, duplicados…),
+# para la evaluación (python -m radar.evaluate).
+last_stats: dict = {}
+
+
 async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None,
                headers: dict | None = None) -> httpx.Response | None:
+    host = urlparse(url).hostname or url
     for attempt in range(3):
         try:
             r = await client.get(url, params=params, headers=headers)
@@ -55,10 +64,12 @@ async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None,
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
             r.raise_for_status()
+            last_stats.setdefault("requests_ok", Counter())[host] += 1
             return r
         except httpx.HTTPError as e:
             log.warning("Fallo al consultar %s (%s)", url, e)
             await asyncio.sleep(1)
+    last_stats.setdefault("requests_failed", Counter())[host] += 1
     return None
 
 
@@ -229,9 +240,13 @@ async def youtube_api(client: httpx.AsyncClient, start: datetime, end: datetime,
 
 # --- Google News (RSS) -------------------------------------------------------------------
 
-async def google_news(client: httpx.AsyncClient, start: datetime, end: datetime, per_day: int) -> list[Post]:
+async def google_news(client: httpx.AsyncClient, start: datetime, end: datetime, per_day: int,
+                      queries: list[dict] | None = None, app: str = "") -> list[Post]:
     """Consulta día por día: el feed devuelve como máximo ~100 resultados recientes, así que
-    una sola consulta de varias semanas se cargaría a los últimos días y fabricaría crecimiento."""
+    una sola consulta de varias semanas se cargaría a los últimos días y fabricaría crecimiento.
+
+    Con `app`, las piezas quedan marcadas como noticias sobre esa app (pestañas por app) y con
+    un id propio, para que no se confundan con la misma noticia en las tendencias generales."""
     sem = asyncio.Semaphore(4)
 
     async def one(q: dict, since: datetime, until: datetime) -> list[Post]:
@@ -250,7 +265,7 @@ async def google_news(client: httpx.AsyncClient, start: datetime, end: datetime,
                 continue
             source = item.findtext("source") or ""
             out.append(Post(
-                id=f"gn:{item.findtext('guid')}",
+                id=f"gn:{app + ':' if app else ''}{item.findtext('guid')}",
                 platform="google_news",
                 url=item.findtext("link") or "",
                 text=scrub(item.findtext("title") or ""),
@@ -258,12 +273,13 @@ async def google_news(client: httpx.AsyncClient, start: datetime, end: datetime,
                 author_hash=anonymize_author(source),
                 publisher=source,
                 lang=q["hl"][:2],
+                app=app,
             ))
             if len(out) >= per_day:
                 break
         return out
 
-    tasks = [one(q, s, e) for q in config.GOOGLE_NEWS_QUERIES for s, e in day_windows(start, end)]
+    tasks = [one(q, s, e) for q in (queries or config.GOOGLE_NEWS_QUERIES) for s, e in day_windows(start, end)]
     return [p for b in await asyncio.gather(*tasks) for p in b]
 
 
@@ -323,6 +339,8 @@ def count_community(path: Path) -> int:
 
 async def collect(start: datetime, end: datetime, platforms: set[str], per_day: int,
                   community: Path | None = None) -> list[Post]:
+    last_stats.clear()
+    t0 = time.monotonic()
     async with httpx.AsyncClient(timeout=30, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
         jobs = {}
         if "bluesky" in platforms:
@@ -334,6 +352,8 @@ async def collect(start: datetime, end: datetime, platforms: set[str], per_day: 
                                else youtube(client, start, end))
         if "google_news" in platforms:
             jobs["google_news"] = google_news(client, start, end, max(5, per_day // 2))
+            for app, queries in config.APP_NEWS_QUERIES.items():
+                jobs[f"news_{app}"] = google_news(client, start, end, max(5, per_day // 3), queries, app)
         results = await asyncio.gather(*jobs.values())
     posts = [p for batch in results for p in batch]
     for name, batch in zip(jobs, results):
@@ -348,4 +368,7 @@ async def collect(start: datetime, end: datetime, platforms: set[str], per_day: 
         if p.id not in seen and p.text:
             seen.add(p.id)
             unique.append(p)
+    last_stats.update(by_job={name: len(batch) for name, batch in zip(jobs, results)}, raw=len(posts),
+                      duplicates=len(posts) - len({p.id for p in posts}), empty_text=sum(1 for p in posts if not p.text),
+                      unique=len(unique), seconds=round(time.monotonic() - t0, 1))
     return unique

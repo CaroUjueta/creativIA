@@ -23,6 +23,7 @@ from .models import Post
 
 TZ = ZoneInfo(config.TIMEZONE)
 SMOOTH = 0.01  # suavizado para no dividir por cero ni exagerar temas diminutos
+MIN_SIGNAL = 5  # piezas mínimas para tratar un patrón de "por qué funciona" como evidencia (menos = débil)
 NO_MOMENTUM = {"youtube"}  # con el RSS; con la API de YouTube sí entra (ver sources.youtube_mode)
 WEEKDAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 
@@ -197,6 +198,26 @@ def analyze(posts: list[Post], start: datetime, end: datetime, current_days: int
     }
 
 
+def by_app(posts: list[Post], start: datetime, end: datetime, current_days: int = 7,
+           no_momentum: set[str] = NO_MOMENTUM) -> dict[str, dict]:
+    """El mismo análisis para cada app (LinkedIn, Instagram, TikTok, YouTube), con sus propias piezas:
+    noticias y artículos sobre IA en esa app, aportes de la comunidad y, en YouTube, los videos.
+
+    Las noticias se recolectan día por día, así que cada app tiene línea base y crecimiento propios.
+    Si no hay muestra comparable en las dos ventanas, `momentum` es falso y no se calcula crecimiento.
+    """
+    out = {}
+    for app in config.APPS:
+        sub = [p for p in posts if p.app == app or p.platform == app]
+        r = analyze(sub, start, end, current_days, no_momentum)
+        if not r["counts"]["current"]:
+            continue
+        cur = [p for p in sub if p.labels and p.labels["is_ai"] >= 0.5 and p.created_at >= end - timedelta(days=current_days)]
+        out[app] = {"topics": [t for t in r["topics"] if t["n_posts"]], "momentum": bool(r["counts"]["momentum_platforms"]),
+                    "n_current": r["counts"]["current"], "sources": dict(Counter(p.platform for p in cur))}
+    return out
+
+
 def top_posts(posts: list[Post], lifts: dict[str, float], per_platform: int = 20, limit: int = 60) -> list[dict]:
     """Las piezas que más rindieron frente a la mediana de su plataforma, sin datos del autor.
 
@@ -222,7 +243,7 @@ def _norm(values: list[float]) -> list[float]:
     return [0.5 if hi == lo else (v - lo) / (hi - lo) for v in values]
 
 
-def _score(topics: list[dict]) -> None:
+def _score(topics: list[dict], hype_penalty: float = 0.3) -> None:
     w = config.WEIGHTS
     mom = _norm([math.log(t["growth"]) + 0.5 * math.log(t["acceleration"]) for t in topics])
     eng = _norm([math.log1p(t["engagement"]) for t in topics])
@@ -230,7 +251,7 @@ def _score(topics: list[dict]) -> None:
         raw = (w["momentum"] * m + w["audience_fit"] * t["audience_fit"]
                + w["engagement"] * e + w["practicality"] * t["practical"])
         raw += config.STAGE_BONUS.get(t["stage"], 0.0)
-        raw *= 1 - 0.3 * t["hype"]           # el humo sin sustancia baja la prioridad
+        raw *= 1 - hype_penalty * t["hype"]  # el humo sin sustancia baja la prioridad
         raw *= 0.5 if t["soft_count"] < 3 else 1.0
         t["score"] = round(raw, 4)
         t["momentum_norm"] = m

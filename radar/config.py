@@ -102,6 +102,16 @@ GOOGLE_NEWS_QUERIES: list[dict] = [
     {"q": "artificial intelligence business", "hl": "en-US", "gl": "US", "ceid": "US:en"},
 ]
 
+# Noticias y artículos sobre IA en cada app, para las pestañas de Tendencias por app.
+# LinkedIn, Instagram y TikTok no tienen API pública de descubrimiento sin login: lo que pasa
+# en ellas se ve en lo que publican los medios, más los aportes de la comunidad.
+APPS: list[str] = ["linkedin", "instagram", "tiktok", "youtube"]
+APP_NEWS_QUERIES: dict[str, list[dict]] = {
+    app: [{"q": f"{name} inteligencia artificial", "hl": "es-419", "gl": "MX", "ceid": "MX:es-419"},
+          {"q": f"{name} AI", "hl": "en-US", "gl": "US", "ceid": "US:en"}]
+    for app, name in (("linkedin", "LinkedIn"), ("instagram", "Instagram"), ("tiktok", "TikTok"), ("youtube", "YouTube"))
+}
+
 # Canales de YouTube de referencia (feed RSS público oficial). Añadir los que el equipo siga.
 # Con YOUTUBE_API_KEY se busca por consulta y por día (como en Bluesky) en vez de seguir canales.
 YOUTUBE_QUERIES: list[dict] = [

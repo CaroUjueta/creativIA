@@ -47,8 +47,8 @@ def evaluate(posts: list, end: datetime, weeks: int, top: int, no_momentum: set[
     for k in range(weeks, 0, -1):
         cut = end - timedelta(days=7 * k)
         start = cut - timedelta(days=21)
-        history = [p for p in posts if start <= p.created_at < cut]
-        after = [p for p in posts if cut <= p.created_at < cut + timedelta(days=7)
+        history = [p for p in posts if start <= p.created_at < cut and not p.app]
+        after = [p for p in posts if cut <= p.created_at < cut + timedelta(days=7) and not p.app
                  and p.labels and p.labels["is_ai"] >= 0.5]
         pred = analysis.analyze(history, start, cut, no_momentum=no_momentum)
         platforms = set(pred["counts"]["momentum_platforms"])

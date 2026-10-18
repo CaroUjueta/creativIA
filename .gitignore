@@ -4,3 +4,5 @@ __pycache__/
 out/
 data/cache/
 data/comunidad.csv
+data/cuenta.json
+data/cuenta_metricas.csv
