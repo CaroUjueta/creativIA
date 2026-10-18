@@ -36,16 +36,22 @@ ZEN_JEV_MODEL = "jev-1.13-free"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api"  # el SDK agrega /v1/systemone
 
 
+PROVIDER_KEYS = {"typesafe": "TYPESAFE_API_KEY", "digitalocean": "MODEL_ACCESS_KEY",
+                 "openrouter": "OPENROUTER_API_KEY", "opencode": "OPENCODE_API_KEY"}
+# DigitalOcean antes que OpenRouter: la clave de OpenRouter también se usa para redactar (paso 4).
+_active: str | None = None  # el proveedor que respondió en esta corrida
+
+
+def jev_providers() -> list[str]:
+    """Proveedores de Jev con clave, en orden de preferencia."""
+    return [p for p, key in PROVIDER_KEYS.items() if os.environ.get(key)]
+
+
 def jev_provider() -> str | None:
-    if os.environ.get("TYPESAFE_API_KEY"):
-        return "typesafe"
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return "openrouter"
-    if os.environ.get("MODEL_ACCESS_KEY"):
-        return "digitalocean"
-    if os.environ.get("OPENCODE_API_KEY"):
-        return "opencode"
-    return None
+    providers = jev_providers()
+    if _active in providers:
+        return _active
+    return providers[0] if providers else None
 
 
 def _client_kwargs() -> dict:
@@ -383,17 +389,26 @@ def classify(posts: list[Post], use_jev: bool, use_local: bool = False, concurre
         else:
             pending.append(p)
     if pending:
-        log.info("Clasificando %d piezas con %s (%d en caché)…", len(pending), f"{_client_kwargs()['model']} vía {jev_provider()}", stats["cached"])
-        try:
-            stats["input_tokens"] = asyncio.run(_classify_jev(pending, concurrency))
-        except JevUnavailable as e:
+        global _active
+        errors = []
+        for provider in jev_providers():  # si un proveedor no responde (sin saldo, sin acceso), se prueba el siguiente
+            _active = provider
+            log.info("Clasificando %d piezas con %s (%d en caché)…", len(pending), f"{_client_kwargs()['model']} vía {provider}", stats["cached"])
+            try:
+                stats["input_tokens"] = asyncio.run(_classify_jev(pending, concurrency))
+                break
+            except JevUnavailable as e:
+                log.warning("Jev no está disponible vía %s (%s).", provider, str(e)[:160])
+                errors.append(f"{provider}: {e}"[:200])
+        else:
             # Todo el lote con el respaldo: mezclar etiquetas de Jev (en caché) con las del respaldo
             # sesgaría la comparación entre semanas.
+            _active = None
             for p in posts:
                 p.labels = {}
             fallback = classify(posts, use_jev=False, use_local=use_local or local_available())
-            log.warning("Jev no está disponible vía %s (%s). Se usó el clasificador %s.", jev_provider(), e, fallback["classifier"])
-            return {**fallback, "jev_error": f"{jev_provider()}: {e}"[:300]}
+            log.warning("Se usó el clasificador %s.", fallback["classifier"])
+            return {**fallback, "jev_error": " · ".join(errors)[:300]}
         done = [p for p in pending if p.labels]
         _append_cache(done)
         stats["classified"] = len(done)

@@ -2,7 +2,8 @@
 
     python -m radar.backtest [--weeks 3] [--top 10]
 
-Para cada una de las últimas semanas se corre el radar "como si fuera ese día", sin ver nada
+Simulación hecha hoy con publicaciones públicas antiguas: para cada fecha de corte se corre el radar
+"como si fuera ese día", sin ver nada
 posterior, y se compara con lo que pasó en los 7 días siguientes:
 
 - Acierto del top: de los temas del top del radar, cuántos tuvieron la semana siguiente una
@@ -104,7 +105,7 @@ def render_markdown(bt: dict, meta: dict) -> str:
     lines = [
         "# Backtest del radar de contenido IA", "",
         f"{s['weeks']} semanas evaluadas · clasificador: {meta['classifier']} · generado {meta['generated']}", "",
-        "Para cada semana se corrió el radar sin ver el futuro y se midió la semana siguiente.", "",
+        "Simulación con publicaciones públicas ya existentes: en cada fecha de corte el radar solo ve lo publicado hasta ese día, y su predicción se compara con los 7 días siguientes.", "",
         "| Métrica | Radar | Temas más populares | Todos los temas |",
         "|---|---|---|---|",
         f"| Temas del top que siguieron por encima de su línea base | {pct(s['radar_hit'])} | {pct(s['popular_hit'])} | {pct(s['all_hit'])} |",

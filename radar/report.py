@@ -905,7 +905,7 @@ if (BT && BT.summary.weeks) {
   const bar = (v, plain) => `<i><em class="${plain ? "plain" : ""}" style="width:${Math.round((v || 0) * 100)}%"></em></i>`;
   $("#proof").hidden = false;
   $("#proof").innerHTML = `<h2>¿Acierta el radar?</h2>
-    <p>Corrimos el radar en ${S.weeks} semanas pasadas sin dejarlo ver el futuro y medimos qué pasó la semana siguiente.</p>
+    <p>Simulación con publicaciones públicas de las últimas semanas: en ${S.weeks} fechas de corte le mostramos al radar solo lo publicado hasta ese día y comparamos su predicción con lo que pasó los 7 días siguientes.</p>
     <div class="proof-k">
       <div><b>${pct(S.radar_hit)}</b><span>de los temas de su top ${BT.top} siguieron por encima de lo normal la semana siguiente</span></div>
       <div><b>${pct(S.rising_hit)}</b><span>de los temas que marcó «en crecimiento» o «naciente» siguieron arriba (${S.n_rising} casos)</span></div>
